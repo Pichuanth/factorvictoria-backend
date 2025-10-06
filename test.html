@@ -1,0 +1,188 @@
+﻿<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Casas de Apuestas — Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { font-family: system-ui, Arial, sans-serif; }
+    body { margin: 24px; }
+    h1 { margin: 0 0 12px; }
+    .controls { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0 16px; }
+    .controls > * { padding: 6px 10px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #e1e1e1; padding: 8px; text-align: left; }
+    th { background: #f7f7f7; position: sticky; top: 0; }
+    tbody tr:nth-child(even) { background: #fafafa; }
+    .muted { color: #666; }
+    .right { text-align: right; }
+  </style>
+</head>
+<body>
+  <h1>Partidos con cuotas</h1>
+
+  <div class="controls">
+    <label><input type="checkbox" id="best"> Solo mejores cuotas</label>
+
+    <label>Bookmaker:
+      <select id="bk">
+        <option value="">(todos)</option>
+        <option>Bet365</option>
+        <option>Pinnacle</option>
+        <option>Betfair</option>
+      </select>
+    </label>
+
+    <label>Días:
+      <input id="days" type="number" min="1" value="30" />
+    </label>
+
+    <label>Mercado:
+      <select id="market">
+        <option value="1X2">1X2</option>
+      </select>
+    </label>
+
+    <label>Selección:
+      <select id="sel">
+        <option value="">(todas)</option>
+        <option value="home">home</option>
+        <option value="draw">draw</option>
+        <option value="away">away</option>
+      </select>
+    </label>
+
+    <button id="load">Cargar</button>
+    <button id="csv">Exportar CSV</button>
+
+    <label><input type="checkbox" id="auto"> Auto-refresh (30s)</label>
+
+    <span id="status" class="muted"></span>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>Fecha/Hora</th>
+        <th>Local</th>
+        <th>Visita</th>
+        <th>Bookmaker</th>
+        <th>Mercado</th>
+        <th>Selección</th>
+        <th class="right">Cuota</th>
+        <th>Actualizado</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    const API_BASE = 'http://localhost:3001';
+    let lastData = [];
+    let autoTimer = null;
+
+    function fmtDate(s) { try { return new Date(s).toLocaleString(); } catch { return s; } }
+    function fmtNum(n) { const x = Number(n); return Number.isFinite(x) ? x.toFixed(2) : n; }
+
+    async function load() {
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = 'Cargando…';
+
+      const bk     = document.getElementById('bk').value;
+      const days   = document.getElementById('days').value || 30;
+      const market = document.getElementById('market').value || '1X2';
+      const best   = document.getElementById('best').checked;
+      const sel    = document.getElementById('sel').value;
+
+      const qs = new URLSearchParams({ days, market });
+      if (bk) qs.set('bookmaker', bk);
+
+      const path = best ? '/api/best-odds' : '/api/matches-with-odds';
+
+      try {
+        const res = await fetch(`${API_BASE}${path}?` + qs.toString());
+        let data = await res.json();
+
+        // filtro por selección (cliente)
+        if (sel) data = data.filter(r => String(r.selection).toLowerCase() === sel);
+
+        lastData = data;
+        renderTable(data);
+        statusEl.textContent = data.length + ' filas';
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = 'Error al cargar';
+        alert('No se pudo cargar desde la API. ¿index.js está ejecutándose?');
+      }
+    }
+
+    function renderTable(data) {
+      const tbody = document.querySelector('#tbl tbody');
+      tbody.innerHTML = '';
+
+      if (!Array.isArray(data) || data.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="muted">Sin datos.</td></tr>`;
+        return;
+      }
+
+      for (const r of data) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${fmtDate(r.start_time)}</td>
+          <td>${r.home}</td>
+          <td>${r.away}</td>
+          <td>${r.bookmaker}</td>
+          <td>${r.market}</td>
+          <td>${r.selection}</td>
+          <td class="right">${fmtNum(r.price)}</td>
+          <td>${fmtDate(r.last_updated)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function toCSV(rows) {
+      if (!rows?.length) return '';
+      const headers = Object.keys(rows[0]);
+      const esc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const lines = [
+        headers.map(esc).join(','),
+        ...rows.map(r => headers.map(h => esc(r[h])).join(','))
+      ];
+      return lines.join('\r\n');
+    }
+
+    function downloadCSV() {
+      const csv = toCSV(lastData);
+      if (!csv) { alert('No hay datos para exportar'); return; }
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'cuotas.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function toggleAuto() {
+      const on = document.getElementById('auto').checked;
+      if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+      if (on) autoTimer = setInterval(load, 30000);
+    }
+
+    // Botones y cambios de filtros
+    document.getElementById('load').addEventListener('click', load);
+    document.getElementById('csv').addEventListener('click', downloadCSV);
+    ['best','bk','days','market','sel'].forEach(id =>
+      document.getElementById(id).addEventListener('change', load)
+    );
+    document.getElementById('auto').addEventListener('change', toggleAuto);
+
+    load(); // carga inicial
+  </script>
+</body>
+</html>
+
+
