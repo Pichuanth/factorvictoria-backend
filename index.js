@@ -119,9 +119,10 @@ function mapResponse(data) {
   return (data.response || []).map((f) => ({
     id: String(f.fixture?.id),
     date: f.fixture?.date,
-    timestamp: f.fixture?.timestamp, // útil para "futuro"
+    timestamp: f.fixture?.timestamp ?? null, // <— CLAVE para "future"
     status: f.fixture?.status?.short ?? null,
     league: f.league?.name ?? null,
+    leagueId: f.league?.id ?? null,
     country: f.league?.country ?? null,
     home: f.teams?.home?.name ?? null,
     away: f.teams?.away?.name ?? null,
@@ -130,12 +131,11 @@ function mapResponse(data) {
   }));
 }
 
-async function fetchFromApi({ date, from, to, league, team, tz }) {
+async function fetchFromApi({ from, to, date, league, team, tz }) {
   const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
   const url = new URL(`https://${host}/fixtures`);
-  url.searchParams.set("timezone", tz);
 
-  // Compatibilidad: si viene rango usamos from/to, si no, date
+  // API-Football soporta from/to. Si no vienen, cae a date.
   if (from && to) {
     url.searchParams.set("from", from);
     url.searchParams.set("to", to);
@@ -143,6 +143,7 @@ async function fetchFromApi({ date, from, to, league, team, tz }) {
     url.searchParams.set("date", date);
   }
 
+  url.searchParams.set("timezone", tz);
   if (league) url.searchParams.set("league", league);
   if (team) url.searchParams.set("team", team);
 
@@ -157,72 +158,59 @@ async function fetchFromApi({ date, from, to, league, team, tz }) {
   return { data };
 }
 
-// ===== FIXTURES =====
-// Soporta:
-// - /api/fixtures?date=YYYY-MM-DD
-// - /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
-// Opcional: country=Spain/Chile/etc para filtrar por país de la liga
+// ===== FIXTURES (ahora soporta from/to) =====
 app.get("/api/fixtures", async (req, res, next) => {
   try {
     const tz = process.env.TZ || "UTC";
 
-    const date = String(req.query.date || new Date().toISOString().slice(0, 10));
+    // NUEVO: rango
     const from = String(req.query.from || "").trim();
     const to = String(req.query.to || "").trim();
 
-    const league = String(req.query.league || "").trim();
-    const team = String(req.query.team || "").trim();
-    const country = String(req.query.country || "").trim(); // filtro simple por país de liga
+    // legacy: date (si no usas rango)
+    const date = String(req.query.date || new Date().toISOString().slice(0, 10));
 
-    // --- API mode ---
+    // filtros (opcionales)
+    const country = String(req.query.country || "").trim(); // ej: "Chile", "Spain"
+    const q = String(req.query.q || "").trim().toLowerCase();
+
     if (process.env.APISPORTS_KEY) {
       const { data, error, status } = await fetchFromApi({
+        from: from && to ? from : null,
+        to: from && to ? to : null,
         date,
-        from: from || null,
-        to: to || null,
-        league: league || null,
-        team: team || null,
+        league: String(req.query.league || "").trim(),
+        team: String(req.query.team || "").trim(),
         tz,
       });
+
       if (error) return res.status(status || 500).json({ error, details: data });
 
-      let fixtures = mapResponse(data);
+      let items = mapResponse(data);
 
-      // filtro por país (si lo mandan desde el frontend)
+      // filtro por country (si viene)
       if (country) {
-        const c = country.toLowerCase();
-        fixtures = fixtures.filter((f) => String(f.country || "").toLowerCase() === c);
+        items = items.filter((x) => String(x.country || "").toLowerCase() === country.toLowerCase());
+      }
+
+      // filtro por q (si viene): busca en league/home/away/country
+      if (q) {
+        items = items.filter((x) => {
+          const blob = `${x.country || ""} ${x.league || ""} ${x.home || ""} ${x.away || ""}`.toLowerCase();
+          return blob.includes(q);
+        });
       }
 
       return res.json({
         source: "api",
-        date,
-        from: from || null,
-        to: to || null,
-        country: country || null,
-        fixtures,
+        from: from && to ? from : null,
+        to: from && to ? to : null,
+        date: from && to ? null : date,
+        fixtures: items,
       });
     }
 
-    // --- DB mode ---
-    if (from && to) {
-      const { rows } = await pool.query(
-        `SELECT id, date, status, league, country, home, away, venue, tv
-           FROM app.fixtures
-          WHERE date >= $1::timestamptz
-            AND date <  ($2::date + 1)::timestamptz
-          ORDER BY date ASC`,
-        [from, to]
-      );
-
-      const filtered = country
-        ? rows.filter((r) => String(r.country || "").toLowerCase() === country.toLowerCase())
-        : rows;
-
-      return res.json({ source: "db", from, to, country: country || null, fixtures: filtered });
-    }
-
-    // fallback: date
+    // DB fallback (para rango lo normal sería ampliar la query; por ahora date simple)
     const { rows } = await pool.query(
       `SELECT id, date, status, league, country, home, away, venue, tv
          FROM app.fixtures
@@ -231,11 +219,7 @@ app.get("/api/fixtures", async (req, res, next) => {
       [date]
     );
 
-    const filtered = country
-      ? rows.filter((r) => String(r.country || "").toLowerCase() === country.toLowerCase())
-      : rows;
-
-    return res.json({ source: "db", date, country: country || null, fixtures: filtered });
+    res.json({ source: "db", date, fixtures: rows });
   } catch (e) {
     next(e);
   }
