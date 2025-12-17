@@ -1,14 +1,16 @@
 // app.js (CommonJS)
 const express = require("express");
 const cors = require("cors");
-const { Pool } = require("pg");
+const pg = require("pg");
+
+const { Pool } = pg;
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-// ---------- DB (si usas DATABASE_URL) ----------
+// ---------- DB (opcional) ----------
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -16,23 +18,30 @@ const pool = process.env.DATABASE_URL
     })
   : null;
 
-// Health
-app.get("/api/health", (req, res) => {
+// ---------- HEALTH ----------
+app.get("/api/health", async (req, res) => {
+  // si pool existe, intentamos un ping suave
+  let dbOk = false;
+  if (pool) {
+    try {
+      await pool.query("SELECT 1");
+      dbOk = true;
+    } catch (e) {
+      dbOk = false;
+    }
+  }
+
   return res.json({
     ok: true,
     tz: process.env.APP_TZ || process.env.TZ || null,
-    hasDb: !!process.env.DATABASE_URL,
+    hasDbUrl: !!process.env.DATABASE_URL,
+    dbOk,
     hasApiKey: !!process.env.APISPORTS_KEY,
+    hasHost: !!process.env.APISPORTS_HOST,
   });
 });
 
-// ===============================
-// AQUÍ van tus endpoints reales
-// ===============================
-// Por ahora NO es obligatorio pegar fixtures para que /api/health funcione.
-// Si quieres, después copiamos tu /api/fixtures desde tu código antiguo.
-
-// ODDS (tu código actual)
+// ---------- ODDS ----------
 app.get("/api/odds", async (req, res, next) => {
   try {
     if (!process.env.APISPORTS_KEY) {
@@ -59,7 +68,6 @@ app.get("/api/odds", async (req, res, next) => {
     }
 
     const bookmakers = responses[0]?.bookmakers || [];
-
     let best1x2 = null;
     let bestOU25 = null;
 
