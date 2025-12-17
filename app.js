@@ -1,10 +1,7 @@
-// app.js
-import express from "express";
-import cors from "cors";
-
-// Si en tu index.js tienes pool/pg y otras cosas, muévelas aquí también:
-import pg from "pg";
-const { Pool } = pg;
+// app.js (CommonJS)
+const express = require("express");
+const cors = require("cors");
+const { Pool } = require("pg");
 
 const app = express();
 
@@ -13,7 +10,10 @@ app.use(express.json());
 
 // ---------- DB (si usas DATABASE_URL) ----------
 const pool = process.env.DATABASE_URL
-  ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    })
   : null;
 
 // Health
@@ -26,14 +26,13 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// ===================================================
-// PEGA AQUÍ tus endpoints reales (fixtures, odds, etc.)
-// ===================================================
+// ===============================
+// AQUÍ van tus endpoints reales
+// ===============================
+// Por ahora NO es obligatorio pegar fixtures para que /api/health funcione.
+// Si quieres, después copiamos tu /api/fixtures desde tu código antiguo.
 
-// ===== FIXTURES (ejemplo: si ya lo tienes en index.js, pégalo acá tal cual) =====
-// app.get("/api/fixtures", async (req, res, next) => { ... });
-
-// ===== ODDS (tu código actual) =====
+// ODDS (tu código actual)
 app.get("/api/odds", async (req, res, next) => {
   try {
     if (!process.env.APISPORTS_KEY) {
@@ -68,21 +67,21 @@ app.get("/api/odds", async (req, res, next) => {
       const bookmakerName = b?.bookmaker?.name || "Unknown";
       const bets = b?.bets || [];
 
-      const mw = bets.find(x => (x?.name || "").toLowerCase().includes("match winner"));
+      const mw = bets.find((x) => (x?.name || "").toLowerCase().includes("match winner"));
       if (mw?.values?.length) {
-        const home = mw.values.find(v => (v?.value || "").toLowerCase() === "home")?.odd;
-        const draw = mw.values.find(v => (v?.value || "").toLowerCase() === "draw")?.odd;
-        const away = mw.values.find(v => (v?.value || "").toLowerCase() === "away")?.odd;
+        const home = mw.values.find((v) => (v?.value || "").toLowerCase() === "home")?.odd;
+        const draw = mw.values.find((v) => (v?.value || "").toLowerCase() === "draw")?.odd;
+        const away = mw.values.find((v) => (v?.value || "").toLowerCase() === "away")?.odd;
 
         if (home && draw && away && !best1x2) {
           best1x2 = { home: Number(home), draw: Number(draw), away: Number(away), bookmaker: bookmakerName };
         }
       }
 
-      const ou = bets.find(x => (x?.name || "").toLowerCase().includes("over/under"));
+      const ou = bets.find((x) => (x?.name || "").toLowerCase().includes("over/under"));
       if (ou?.values?.length) {
-        const over25 = ou.values.find(v => String(v?.value || "").includes("Over 2.5"))?.odd;
-        const under25 = ou.values.find(v => String(v?.value || "").includes("Under 2.5"))?.odd;
+        const over25 = ou.values.find((v) => String(v?.value || "").includes("Over 2.5"))?.odd;
+        const under25 = ou.values.find((v) => String(v?.value || "").includes("Under 2.5"))?.odd;
 
         if (over25 && under25 && !bestOU25) {
           bestOU25 = { over: Number(over25), under: Number(under25), bookmaker: bookmakerName };
@@ -103,4 +102,4 @@ app.get("/api/odds", async (req, res, next) => {
   }
 });
 
-export default app;
+module.exports = app;
