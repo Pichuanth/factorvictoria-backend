@@ -1,24 +1,6 @@
 {
   "version": 2,
-  "functions": {
-    "api/index.js": {
-      "runtime": "nodejs20.x"
-    }
-  },
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/index.js"
-    }
-  ],
-  "crons": [
-    {
-      "path": "/api/admin-fixtures-sync?token=fv_cron_92jd81s",
-      "schedule": "0 5 * * *"
-    },
-    {
-      "path": "/api/admin-fixtures-sync?token=fv_cron_92jd81s",
-      "schedule": "0 13 * * *"
-    }
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.js" }
   ]
 }
