@@ -19,6 +19,14 @@ app.use(express.json());
 // Para webhooks que necesitan raw body
 app.use("/api/pay/webhook", express.raw({ type: "*/*" }));
 app.use("/api/pay/mp/webhook", express.raw({ type: "*/*" }));
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "factorvictoria-backend",
+    time: new Date().toISOString(),
+    tz: process.env.APP_TZ || "not-set",
+  });
+});
 
 // ===== Postgres =====
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -184,58 +192,137 @@ async function fetchFromApi({ from, to, tz }) {
   return { data };
 }
 
-// ===== FIXTURES =====
-// Soporta:
-// - /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD&country=Chile&q=colo
-// - /api/fixtures?date=YYYY-MM-DD (compatibilidad)
+// ===== FIXTURES (soporta date o rango from/to) =====
 app.get("/api/fixtures", async (req, res, next) => {
   try {
-    const tz = process.env.TZ || "UTC";
+    const TZ = process.env.APP_TZ || "America/Santiago";
 
-    const dateParam = String(req.query.date || "").trim();
-    const from = String(req.query.from || "").trim();
-    const to = String(req.query.to || "").trim();
+    const from = String(req.query.from || "").trim(); // YYYY-MM-DD
+    const to = String(req.query.to || "").trim();     // YYYY-MM-DD
+    const date = String(req.query.date || "").trim(); // YYYY-MM-DD
 
-    // country/q vienen desde Comparator.jsx
-    const country = String(req.query.country || "").trim();
-    const q = String(req.query.q || "").trim();
+    const league = String(req.query.league || "").trim();
+    const team = String(req.query.team || "").trim();
 
-    // compatibilidad: si viene date, lo convertimos a from/to
-    const finalFrom = dateParam || from || new Date().toISOString().slice(0, 10);
-    const finalTo = dateParam || to || finalFrom;
+    // Si viene rango, úsalo. Si no, usa date. Si no viene nada, usa hoy.
+    const today = new Date().toISOString().slice(0, 10);
+    const qFrom = from || date || today;
+    const qTo = to || date || qFrom;
 
     if (process.env.APISPORTS_KEY) {
-      const { data, error, status } = await fetchFromApi({ from: finalFrom, to: finalTo, tz });
-      if (error) return res.status(status || 500).json({ error, details: data });
+      const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+      const url = new URL(`https://${host}/fixtures`);
 
-      const fixtures = filterByCountryAndQ(mapResponse(data), country, q);
-      return res.json({ source: "api", from: finalFrom, to: finalTo, fixtures });
+      // API-Football soporta from/to (rango) + timezone
+      url.searchParams.set("from", qFrom);
+      url.searchParams.set("to", qTo);
+      url.searchParams.set("timezone", tz);
+
+      if (league) url.searchParams.set("league", league);
+      if (team) url.searchParams.set("team", team);
+
+      const r = await fetch(url, {
+        headers: { "x-apisports-key": process.env.APISPORTS_KEY },
+      });
+
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
+      if (data?.errors?.token) return res.status(401).json({ error: "bad_apikey", details: data.errors });
+
+      return res.json({
+        source: "api",
+        from: qFrom,
+        to: qTo,
+        fixtures: mapResponse(data),
+      });
     }
 
-    // Fallback DB (si no hay APISPORTS_KEY)
+    // Fallback DB: por ahora filtra solo por rango (date::date entre from y to)
     const { rows } = await pool.query(
-      `
-      SELECT id, date, status, league, country, home, away, venue, tv
-        FROM app.fixtures
-       WHERE date::date >= $1::date
-         AND date::date <= $2::date
-       ORDER BY date ASC
-      `,
-      [finalFrom, finalTo]
+      `SELECT id, date, status, league, country, home, away, venue, tv
+         FROM app.fixtures
+        WHERE date::date BETWEEN $1::date AND $2::date
+        ORDER BY date ASC`,
+      [qFrom, qTo]
     );
 
-    const fixtures = filterByCountryAndQ(
-      rows.map((r) => ({
-        fixture: { id: r.id, date: r.date, timestamp: null, status: r.status },
-        league: { id: null, name: r.league, country: r.country },
-        teams: { home: { id: null, name: r.home }, away: { id: null, name: r.away } },
-        venue: { name: r.venue },
-      })),
-      country,
-      q
-    );
+    res.json({ source: "db", from: qFrom, to: qTo, fixtures: rows });
+  } catch (e) {
+    next(e);
+  }
+});
+// ===== ODDS (1X2 + Over/Under 2.5) =====
+app.get("/api/odds", async (req, res, next) => {
+  try {
+    if (!process.env.APISPORTS_KEY) {
+      return res.status(400).json({ error: "missing APISPORTS_KEY" });
+    }
 
-    res.json({ source: "db", from: finalFrom, to: finalTo, fixtures });
+    const fixture = String(req.query.fixture || "").trim();
+    if (!fixture) return res.status(400).json({ error: "missing_fixture" });
+
+    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+    const url = new URL(`https://${host}/odds`);
+    url.searchParams.set("fixture", fixture);
+
+    const r = await fetch(url, {
+      headers: { "x-apisports-key": process.env.APISPORTS_KEY },
+    });
+
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
+
+    const responses = data?.response || [];
+    if (!responses.length) {
+      return res.json({ fixture, found: false, markets: {} });
+    }
+
+    // Tomamos el primer bookmaker disponible con mercados útiles
+    const bookmakers = responses[0]?.bookmakers || [];
+
+    let best1x2 = null;   // {home, draw, away, bookmaker}
+    let bestOU25 = null;  // {over, under, bookmaker}
+
+    for (const b of bookmakers) {
+      const bookmakerName = b?.bookmaker?.name || "Unknown";
+
+      const bets = b?.bets || [];
+
+      // 1X2 suele venir como "Match Winner"
+      const mw = bets.find(x => (x?.name || "").toLowerCase().includes("match winner"));
+      if (mw?.values?.length) {
+        const home = mw.values.find(v => (v?.value || "").toLowerCase() === "home")?.odd;
+        const draw = mw.values.find(v => (v?.value || "").toLowerCase() === "draw")?.odd;
+        const away = mw.values.find(v => (v?.value || "").toLowerCase() === "away")?.odd;
+
+        if (home && draw && away && !best1x2) {
+          best1x2 = { home: Number(home), draw: Number(draw), away: Number(away), bookmaker: bookmakerName };
+        }
+      }
+
+      // Over/Under suele venir como "Goals Over/Under"
+      const ou = bets.find(x => (x?.name || "").toLowerCase().includes("over/under"));
+      if (ou?.values?.length) {
+        const over25 = ou.values.find(v => String(v?.value || "").includes("Over 2.5"))?.odd;
+        const under25 = ou.values.find(v => String(v?.value || "").includes("Under 2.5"))?.odd;
+
+        if (over25 && under25 && !bestOU25) {
+          bestOU25 = { over: Number(over25), under: Number(under25), bookmaker: bookmakerName };
+        }
+      }
+
+      if (best1x2 && bestOU25) break;
+    }
+
+    return res.json({
+      fixture,
+      found: true,
+      markets: {
+        "1X2": best1x2,
+        "OU_2_5": bestOU25,
+      },
+      raw_bookmakers: bookmakers.length,
+    });
   } catch (e) {
     next(e);
   }
