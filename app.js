@@ -2,9 +2,9 @@
 const express = require("express");
 const cors = require("cors");
 const pg = require("pg");
+const fetch = global.fetch || require("node-fetch");
 
 const { Pool } = pg;
-
 const app = express();
 
 app.use(cors());
@@ -20,34 +20,61 @@ const pool = process.env.DATABASE_URL
 
 // ---------- HEALTH ----------
 app.get("/api/health", async (req, res) => {
-  // si pool existe, intentamos un ping suave
   let dbOk = false;
   if (pool) {
     try {
       await pool.query("SELECT 1");
       dbOk = true;
-    } catch (e) {
-      dbOk = false;
-    }
+    } catch (_) {}
   }
 
-  return res.json({
+  res.json({
     ok: true,
     tz: process.env.APP_TZ || process.env.TZ || null,
     hasDbUrl: !!process.env.DATABASE_URL,
     dbOk,
     hasApiKey: !!process.env.APISPORTS_KEY,
-    hasHost: !!process.env.APISPORTS_HOST,
+    now: new Date().toISOString(),
   });
 });
 
-// ---------- ODDS ----------
-app.get("/api/odds", async (req, res, next) => {
+// ---------- FIXTURES ----------
+app.get("/api/fixtures", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
       return res.status(400).json({ error: "missing APISPORTS_KEY" });
     }
 
+    const date = String(req.query.date || "").trim();
+    if (!date) {
+      return res.status(400).json({ error: "missing_date", example: "YYYY-MM-DD" });
+    }
+
+    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+    const url = new URL(`https://${host}/fixtures`);
+    url.searchParams.set("date", date);
+    url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
+
+    const r = await fetch(url, {
+      headers: { "x-apisports-key": process.env.APISPORTS_KEY },
+    });
+
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json(data);
+
+    res.json({
+      date,
+      results: data?.results || 0,
+      fixtures: data?.response || [],
+    });
+  } catch (e) {
+    res.status(500).json({ error: "server_error", message: e.message });
+  }
+});
+
+// ---------- ODDS ----------
+app.get("/api/odds", async (req, res) => {
+  try {
     const fixture = String(req.query.fixture || "").trim();
     if (!fixture) return res.status(400).json({ error: "missing_fixture" });
 
@@ -59,54 +86,12 @@ app.get("/api/odds", async (req, res, next) => {
       headers: { "x-apisports-key": process.env.APISPORTS_KEY },
     });
 
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json(data);
 
-    const responses = data?.response || [];
-    if (!responses.length) {
-      return res.json({ fixture, found: false, markets: {} });
-    }
-
-    const bookmakers = responses[0]?.bookmakers || [];
-    let best1x2 = null;
-    let bestOU25 = null;
-
-    for (const b of bookmakers) {
-      const bookmakerName = b?.bookmaker?.name || "Unknown";
-      const bets = b?.bets || [];
-
-      const mw = bets.find((x) => (x?.name || "").toLowerCase().includes("match winner"));
-      if (mw?.values?.length) {
-        const home = mw.values.find((v) => (v?.value || "").toLowerCase() === "home")?.odd;
-        const draw = mw.values.find((v) => (v?.value || "").toLowerCase() === "draw")?.odd;
-        const away = mw.values.find((v) => (v?.value || "").toLowerCase() === "away")?.odd;
-
-        if (home && draw && away && !best1x2) {
-          best1x2 = { home: Number(home), draw: Number(draw), away: Number(away), bookmaker: bookmakerName };
-        }
-      }
-
-      const ou = bets.find((x) => (x?.name || "").toLowerCase().includes("over/under"));
-      if (ou?.values?.length) {
-        const over25 = ou.values.find((v) => String(v?.value || "").includes("Over 2.5"))?.odd;
-        const under25 = ou.values.find((v) => String(v?.value || "").includes("Under 2.5"))?.odd;
-
-        if (over25 && under25 && !bestOU25) {
-          bestOU25 = { over: Number(over25), under: Number(under25), bookmaker: bookmakerName };
-        }
-      }
-
-      if (best1x2 && bestOU25) break;
-    }
-
-    return res.json({
-      fixture,
-      found: true,
-      markets: { "1X2": best1x2, "OU_2_5": bestOU25 },
-      raw_bookmakers: bookmakers.length,
-    });
+    res.json(data);
   } catch (e) {
-    next(e);
+    res.status(500).json({ error: "server_error", message: e.message });
   }
 });
 
