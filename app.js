@@ -16,14 +16,13 @@ const pool = process.env.DATABASE_URL
   ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
   : null;
 
-// ---------- HEALTH ----------
+// Health
 app.get("/api/health", (req, res) => {
-  res.json({
+  return res.json({
     ok: true,
-    now: new Date().toISOString(),
-    tz: process.env.APP_TZ || process.env.TZ || "not_set",
-    hasKey: !!process.env.APISPORTS_KEY,
+    tz: process.env.APP_TZ || process.env.TZ || null,
     hasDb: !!process.env.DATABASE_URL,
+    hasApiKey: !!process.env.APISPORTS_KEY,
   });
 });
 
