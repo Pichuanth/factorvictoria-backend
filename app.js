@@ -4,7 +4,6 @@ const cors = require("cors");
 const pg = require("pg");
 
 const { Pool } = pg;
-
 const app = express();
 
 app.use(cors());
@@ -18,8 +17,9 @@ const pool = process.env.DATABASE_URL
     })
   : null;
 
-function isYYYYMMDD(s) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+// helper fetch (Node 18+ trae fetch; en Node 20 OK)
+function apiSportsBase() {
+  return `https://${process.env.APISPORTS_HOST || "v3.football.api-sports.io"}`;
 }
 
 // ---------- HEALTH ----------
@@ -45,44 +45,42 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
-// ---------- FIXTURES (API-FOOTBALL) ----------
-// Uso:
-//  - /api/fixtures?date=YYYY-MM-DD
-//  - /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
-app.get("/api/fixtures", async (req, res, next) => {
+// ---------- FIXTURES ----------
+// Ejemplos:
+// /api/fixtures?date=2025-12-17
+// /api/fixtures?from=2025-12-17&to=2025-12-18
+app.get("/api/fixtures", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
       return res.status(400).json({ error: "missing APISPORTS_KEY" });
     }
 
-    const date = req.query.date ? String(req.query.date).trim() : null;
-    const from = req.query.from ? String(req.query.from).trim() : null;
-    const to = req.query.to ? String(req.query.to).trim() : null;
+    const date = String(req.query.date || "").trim();
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
 
-    // Validación básica
-    if (date && !isYYYYMMDD(date)) {
-      return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
-    }
-    if ((from || to) && (!isYYYYMMDD(from) || !isYYYYMMDD(to))) {
-      return res.status(400).json({ error: "invalid_from_to_format", expected: "YYYY-MM-DD" });
-    }
-    if (!date && !(from && to)) {
-      return res.status(400).json({
-        error: "missing_params",
-        usage: ["/api/fixtures?date=YYYY-MM-DD", "/api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD"],
-      });
-    }
+    // Validación simple YYYY-MM-DD
+    const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
-    const url = new URL(`https://${host}/fixtures`);
+    const url = new URL(`${apiSportsBase()}/fixtures`);
 
-    if (date) url.searchParams.set("date", date);
-    if (from && to) {
-      url.searchParams.set("from", from);
-      url.searchParams.set("to", to);
+    // Prioridad: date, si no from/to
+    if (date) {
+      if (!isYMD(date)) return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
+      url.searchParams.set("date", date);
+    } else if (from || to) {
+      if (from && !isYMD(from)) return res.status(400).json({ error: "invalid_from_format", expected: "YYYY-MM-DD" });
+      if (to && !isYMD(to)) return res.status(400).json({ error: "invalid_to_format", expected: "YYYY-MM-DD" });
+      if (from) url.searchParams.set("from", from);
+      if (to) url.searchParams.set("to", to);
+    } else {
+      return res.status(400).json({ error: "missing_query", example: "/api/fixtures?date=2025-12-17" });
     }
 
-    const r = await fetch(url, {
+    // Opcional: timezone para que te devuelva horarios alineados
+    url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
+
+    const r = await fetch(url.toString(), {
       headers: { "x-apisports-key": process.env.APISPORTS_KEY },
     });
 
@@ -90,17 +88,17 @@ app.get("/api/fixtures", async (req, res, next) => {
     if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
 
     return res.json({
-      ok: true,
-      query: { date, from, to },
+      query: { date: date || null, from: from || null, to: to || null },
       results: data?.results ?? null,
       response: data?.response ?? [],
     });
   } catch (e) {
-    next(e);
+    return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });
 
 // ---------- ODDS ----------
+// Nota: fixture debe ser ID numérico (ej: 123456), NO una fecha.
 app.get("/api/odds", async (req, res, next) => {
   try {
     if (!process.env.APISPORTS_KEY) {
@@ -109,9 +107,9 @@ app.get("/api/odds", async (req, res, next) => {
 
     const fixture = String(req.query.fixture || "").trim();
     if (!fixture) return res.status(400).json({ error: "missing_fixture" });
+    if (!/^\d+$/.test(fixture)) return res.status(400).json({ error: "fixture_must_be_numeric_id" });
 
-    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
-    const url = new URL(`https://${host}/odds`);
+    const url = new URL(`${apiSportsBase()}/odds`);
     url.searchParams.set("fixture", fixture);
 
     const r = await fetch(url, {
@@ -167,12 +165,6 @@ app.get("/api/odds", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
-});
-
-// ---------- Error handler ----------
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: "server_error", message: err?.message || String(err) });
 });
 
 module.exports = app;
