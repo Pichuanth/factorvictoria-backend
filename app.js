@@ -96,6 +96,42 @@ app.get("/api/fixtures", async (req, res) => {
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });
+// ---------- FIXTURES ----------
+app.get("/api/fixtures", async (req, res, next) => {
+  try {
+    if (!process.env.APISPORTS_KEY) {
+      return res.status(400).json({ error: "missing APISPORTS_KEY" });
+    }
+
+    const date = String(req.query.date || "").trim(); // YYYY-MM-DD
+    if (!date) return res.status(400).json({ error: "missing_date", hint: "use ?date=YYYY-MM-DD" });
+
+    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+    const url = new URL(`https://${host}/fixtures`);
+    url.searchParams.set("date", date);
+
+    // opcionales si quieres filtrar
+    if (req.query.league) url.searchParams.set("league", String(req.query.league));
+    if (req.query.season) url.searchParams.set("season", String(req.query.season));
+    if (req.query.team) url.searchParams.set("team", String(req.query.team));
+    if (req.query.timezone) url.searchParams.set("timezone", String(req.query.timezone));
+
+    const r = await fetch(url, {
+      headers: { "x-apisports-key": process.env.APISPORTS_KEY },
+    });
+
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
+
+    return res.json({
+      date,
+      results: data?.results ?? null,
+      response: data?.response ?? [],
+    });
+  } catch (e) {
+    next(e);
+  }
+});
 
 // ---------- ODDS ----------
 // Nota: fixture debe ser ID numérico (ej: 123456), NO una fecha.

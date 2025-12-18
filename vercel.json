@@ -1,13 +1,3 @@
 {
-  "version": 2,
-  "crons": [
-    {
-      "path": "/api/admin-fixtures-sync?token=fv_cron_92jd81s",
-      "schedule": "0 5 * * *"
-    },
-    {
-      "path": "/api/admin-fixtures-sync?token=fv_cron_92jd81s",
-      "schedule": "0 13 * * *"
-    }
-  ]
+  "version": 2
 }
