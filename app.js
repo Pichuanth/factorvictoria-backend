@@ -18,7 +18,6 @@ const pool = process.env.DATABASE_URL
     })
   : null;
 
-// Helpers
 function isYYYYMMDD(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
 }
@@ -46,47 +45,36 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
-// ---------- FIXTURES ----------
+// ---------- FIXTURES (API-FOOTBALL) ----------
+// Uso:
+//  - /api/fixtures?date=YYYY-MM-DD
+//  - /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
 app.get("/api/fixtures", async (req, res, next) => {
   try {
     if (!process.env.APISPORTS_KEY) {
       return res.status(400).json({ error: "missing APISPORTS_KEY" });
     }
 
-    // Soporta:
-    // - /api/fixtures?date=YYYY-MM-DD
-    // - /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
-    // Extras opcionales: league, season, team, status, next, last
-    const date = String(req.query.date || "").trim();
-    const from = String(req.query.from || "").trim();
-    const to = String(req.query.to || "").trim();
+    const date = req.query.date ? String(req.query.date).trim() : null;
+    const from = req.query.from ? String(req.query.from).trim() : null;
+    const to = req.query.to ? String(req.query.to).trim() : null;
 
+    // Validación básica
     if (date && !isYYYYMMDD(date)) {
       return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
     }
-    if (from && !isYYYYMMDD(from)) {
-      return res.status(400).json({ error: "invalid_from_format", expected: "YYYY-MM-DD" });
+    if ((from || to) && (!isYYYYMMDD(from) || !isYYYYMMDD(to))) {
+      return res.status(400).json({ error: "invalid_from_to_format", expected: "YYYY-MM-DD" });
     }
-    if (to && !isYYYYMMDD(to)) {
-      return res.status(400).json({ error: "invalid_to_format", expected: "YYYY-MM-DD" });
-    }
-
     if (!date && !(from && to)) {
       return res.status(400).json({
-        error: "missing_date_or_range",
-        examples: [
-          "/api/fixtures?date=2025-12-17",
-          "/api/fixtures?from=2025-12-17&to=2025-12-18",
-        ],
+        error: "missing_params",
+        usage: ["/api/fixtures?date=YYYY-MM-DD", "/api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD"],
       });
     }
 
     const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
     const url = new URL(`https://${host}/fixtures`);
-
-    // timezone recomendado para que el día calce con Chile
-    const tz = String(req.query.tz || process.env.APP_TZ || "America/Santiago");
-    url.searchParams.set("timezone", tz);
 
     if (date) url.searchParams.set("date", date);
     if (from && to) {
@@ -94,26 +82,16 @@ app.get("/api/fixtures", async (req, res, next) => {
       url.searchParams.set("to", to);
     }
 
-    // filtros opcionales (si vienen)
-    const passthrough = ["league", "season", "team", "status", "next", "last"];
-    for (const k of passthrough) {
-      if (req.query[k] != null && String(req.query[k]).trim() !== "") {
-        url.searchParams.set(k, String(req.query[k]).trim());
-      }
-    }
-
     const r = await fetch(url, {
       headers: { "x-apisports-key": process.env.APISPORTS_KEY },
     });
 
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      return res.status(r.status).json({ error: "upstream_error", details: data });
-    }
+    if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
 
     return res.json({
       ok: true,
-      query: Object.fromEntries(url.searchParams.entries()),
+      query: { date, from, to },
       results: data?.results ?? null,
       response: data?.response ?? [],
     });
@@ -144,7 +122,9 @@ app.get("/api/odds", async (req, res, next) => {
     if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
 
     const responses = data?.response || [];
-    if (!responses.length) return res.json({ fixture, found: false, markets: {} });
+    if (!responses.length) {
+      return res.json({ fixture, found: false, markets: {} });
+    }
 
     const bookmakers = responses[0]?.bookmakers || [];
     let best1x2 = null;
@@ -187,6 +167,12 @@ app.get("/api/odds", async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+});
+
+// ---------- Error handler ----------
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: "server_error", message: err?.message || String(err) });
 });
 
 module.exports = app;
