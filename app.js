@@ -44,6 +44,44 @@ app.get("/api/health", async (req, res) => {
     now: new Date().toISOString(),
   });
 });
+// ---------- FIXTURES (por fecha) ----------
+// GET /api/fixtures?date=YYYY-MM-DD
+app.get("/api/fixtures", async (req, res, next) => {
+  try {
+    if (!process.env.APISPORTS_KEY) {
+      return res.status(400).json({ error: "missing APISPORTS_KEY" });
+    }
+
+    const date = String(req.query.date || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: "invalid_date", expected: "YYYY-MM-DD" });
+    }
+
+    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+    const url = new URL(`https://${host}/fixtures`);
+    url.searchParams.set("date", date);
+    // opcional: timezone para que coincida con Chile
+    url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
+
+    const r = await fetch(url, {
+      headers: { "x-apisports-key": process.env.APISPORTS_KEY }
+    });
+
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      return res.status(r.status).json({ error: "upstream_error", details: data });
+    }
+
+    // Devuelve tal cual o lo puedes “limpiar”
+    return res.json({
+      date,
+      results: data?.results ?? null,
+      response: data?.response ?? []
+    });
+  } catch (e) {
+    next(e);
+  }
+});
 
 // ---------- FIXTURES ----------
 // Ejemplos:
