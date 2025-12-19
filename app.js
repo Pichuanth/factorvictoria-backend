@@ -45,8 +45,7 @@ app.get("/api/health", async (req, res) => {
 });
 
 // ---------- FIXTURES ----------
-// /api/fixtures?date=YYYY-MM-DD
-// /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
+// GET /api/fixtures?date=YYYY-MM-DD  OR  /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
 app.get("/api/fixtures", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
@@ -56,15 +55,13 @@ app.get("/api/fixtures", async (req, res) => {
     const date = String(req.query.date || "").trim();
     const from = String(req.query.from || "").trim();
     const to = String(req.query.to || "").trim();
-
     const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-    const url = new URL(`${apiSportsBase()}/fixtures`);
+    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+    const url = new URL(`https://${host}/fixtures`);
 
     if (date) {
-      if (!isYMD(date)) {
-        return res.status(400).json({ error: "invalid_date", expected: "YYYY-MM-DD" });
-      }
+      if (!isYMD(date)) return res.status(400).json({ error: "invalid_date", expected: "YYYY-MM-DD" });
       url.searchParams.set("date", date);
     } else if (from || to) {
       if (from && !isYMD(from)) return res.status(400).json({ error: "invalid_from", expected: "YYYY-MM-DD" });
@@ -77,10 +74,7 @@ app.get("/api/fixtures", async (req, res) => {
 
     url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
 
-    const r = await fetch(url.toString(), {
-      headers: { "x-apisports-key": process.env.APISPORTS_KEY },
-    });
-
+    const r = await fetch(url, { headers: { "x-apisports-key": process.env.APISPORTS_KEY } });
     const data = await r.json().catch(() => ({}));
     if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
 
