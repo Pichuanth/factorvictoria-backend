@@ -21,10 +21,6 @@ function apiSportsBase() {
   return `https://${process.env.APISPORTS_HOST || "v3.football.api-sports.io"}`;
 }
 
-function isYMD(s) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
-}
-
 // ---------- HEALTH ----------
 app.get("/api/health", async (req, res) => {
   let dbOk = false;
@@ -49,9 +45,8 @@ app.get("/api/health", async (req, res) => {
 });
 
 // ---------- FIXTURES ----------
-// Ejemplos:
-// /api/fixtures?date=2025-12-17
-// /api/fixtures?from=2025-12-17&to=2025-12-18
+// /api/fixtures?date=YYYY-MM-DD
+// /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
 app.get("/api/fixtures", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
@@ -61,6 +56,8 @@ app.get("/api/fixtures", async (req, res) => {
     const date = String(req.query.date || "").trim();
     const from = String(req.query.from || "").trim();
     const to = String(req.query.to || "").trim();
+
+    const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
     const url = new URL(`${apiSportsBase()}/fixtures`);
 
@@ -98,7 +95,7 @@ app.get("/api/fixtures", async (req, res) => {
 });
 
 // ---------- ODDS ----------
-// Nota: fixture debe ser ID numérico (ej: 123456), NO una fecha.
+// /api/odds?fixture=NUMERO (ID del fixture)
 app.get("/api/odds", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
@@ -120,9 +117,7 @@ app.get("/api/odds", async (req, res) => {
     if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
 
     const responses = data?.response || [];
-    if (!responses.length) {
-      return res.json({ fixture, found: false, markets: {} });
-    }
+    if (!responses.length) return res.json({ fixture, found: false, markets: {} });
 
     const bookmakers = responses[0]?.bookmakers || [];
     let best1x2 = null;
@@ -137,7 +132,6 @@ app.get("/api/odds", async (req, res) => {
         const home = mw.values.find((v) => (v?.value || "").toLowerCase() === "home")?.odd;
         const draw = mw.values.find((v) => (v?.value || "").toLowerCase() === "draw")?.odd;
         const away = mw.values.find((v) => (v?.value || "").toLowerCase() === "away")?.odd;
-
         if (home && draw && away && !best1x2) {
           best1x2 = { home: Number(home), draw: Number(draw), away: Number(away), bookmaker: bookmakerName };
         }
@@ -147,7 +141,6 @@ app.get("/api/odds", async (req, res) => {
       if (ou?.values?.length) {
         const over25 = ou.values.find((v) => String(v?.value || "").includes("Over 2.5"))?.odd;
         const under25 = ou.values.find((v) => String(v?.value || "").includes("Under 2.5"))?.odd;
-
         if (over25 && under25 && !bestOU25) {
           bestOU25 = { over: Number(over25), under: Number(under25), bookmaker: bookmakerName };
         }
