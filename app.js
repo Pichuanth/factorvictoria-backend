@@ -63,14 +63,13 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
-// ---------- FIXTURES (UNIFICADO) ----------
-// Ejemplos:
-// /api/fixtures?date=2025-12-19
-// /api/fixtures?from=2025-12-19&to=2025-12-20
+// ---------- FIXTURES ----------
+// /api/fixtures?date=2025-12-20
+// /api/fixtures?from=2025-12-20&to=2025-12-21
 app.get("/api/fixtures", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
+      return res.status(400).json({ error: "missing APISPORTS_KEY" });
     }
 
     const date = String(req.query.date || "").trim();
@@ -79,42 +78,29 @@ app.get("/api/fixtures", async (req, res) => {
 
     const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-    const url = new URL(`${apiSportsBase()}/fixtures`);
+    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+    const url = new URL(`https://${host}/fixtures`);
 
     if (date) {
-      if (!isYMD(date)) {
-        return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
-      }
+      if (!isYMD(date)) return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
       url.searchParams.set("date", date);
     } else if (from || to) {
-      if (from && !isYMD(from)) {
-        return res.status(400).json({ error: "invalid_from_format", expected: "YYYY-MM-DD" });
-      }
-      if (to && !isYMD(to)) {
-        return res.status(400).json({ error: "invalid_to_format", expected: "YYYY-MM-DD" });
-      }
+      if (from && !isYMD(from)) return res.status(400).json({ error: "invalid_from_format", expected: "YYYY-MM-DD" });
+      if (to && !isYMD(to)) return res.status(400).json({ error: "invalid_to_format", expected: "YYYY-MM-DD" });
       if (from) url.searchParams.set("from", from);
       if (to) url.searchParams.set("to", to);
     } else {
-      return res.status(400).json({ error: "missing_query", example: "/api/fixtures?date=2025-12-19" });
+      return res.status(400).json({ error: "missing_query", example: "/api/fixtures?date=2025-12-20" });
     }
 
-    // timezone (Chile)
     url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
 
-    const { ok, status, data } = await fetchJsonWithTimeout(
-      url.toString(),
-      { headers: { "x-apisports-key": process.env.APISPORTS_KEY } },
-      8000
-    );
+    const r = await fetch(url.toString(), {
+      headers: { "x-apisports-key": process.env.APISPORTS_KEY },
+    });
 
-    if (!ok) {
-      return res.status(status).json({
-        error: "upstream_error",
-        status,
-        details: data,
-      });
-    }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
 
     return res.json({
       query: { date: date || null, from: from || null, to: to || null },
@@ -122,13 +108,6 @@ app.get("/api/fixtures", async (req, res) => {
       response: data?.response ?? [],
     });
   } catch (e) {
-    // Si el fetch fue abortado por timeout, devolvemos 504 controlado (no el de Vercel)
-    if (String(e?.name) === "AbortError") {
-      return res.status(504).json({
-        error: "apisports_timeout",
-        message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente.",
-      });
-    }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });

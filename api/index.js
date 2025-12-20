@@ -1,5 +1,5 @@
-// api/index.js
-const serverless = require("serverless-http");
-const app = require("../app"); // <-- ESTO ESTÁ BIEN así. Sube 1 nivel desde /api a / (raíz) y carga app.js
+const app = require("../app");
 
-module.exports = serverless(app);
+module.exports = (req, res) => {
+  return app(req, res);
+};
