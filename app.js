@@ -21,14 +21,33 @@ function apiSportsBase() {
   return `https://${process.env.APISPORTS_HOST || "v3.football.api-sports.io"}`;
 }
 
+// Fetch con timeout (clave para evitar 504 en Vercel)
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const r = await fetch(url, { ...options, signal: controller.signal });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 // ---------- HEALTH ----------
 app.get("/api/health", async (req, res) => {
   let dbOk = false;
+
   if (pool) {
     try {
-      await pool.query("SELECT 1");
+      // ping rápido
+      await Promise.race([
+        pool.query("SELECT 1"),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("db_timeout")), 1500)),
+      ]);
       dbOk = true;
-    } catch (e) {
+    } catch {
       dbOk = false;
     }
   }
@@ -44,39 +63,58 @@ app.get("/api/health", async (req, res) => {
   });
 });
 
-// ---------- FIXTURES ----------
-// GET /api/fixtures?date=YYYY-MM-DD  OR  /api/fixtures?from=YYYY-MM-DD&to=YYYY-MM-DD
+// ---------- FIXTURES (UNIFICADO) ----------
+// Ejemplos:
+// /api/fixtures?date=2025-12-19
+// /api/fixtures?from=2025-12-19&to=2025-12-20
 app.get("/api/fixtures", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing APISPORTS_KEY" });
+      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
     }
 
     const date = String(req.query.date || "").trim();
     const from = String(req.query.from || "").trim();
     const to = String(req.query.to || "").trim();
+
     const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
-    const url = new URL(`https://${host}/fixtures`);
+    const url = new URL(`${apiSportsBase()}/fixtures`);
 
     if (date) {
-      if (!isYMD(date)) return res.status(400).json({ error: "invalid_date", expected: "YYYY-MM-DD" });
+      if (!isYMD(date)) {
+        return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
+      }
       url.searchParams.set("date", date);
     } else if (from || to) {
-      if (from && !isYMD(from)) return res.status(400).json({ error: "invalid_from", expected: "YYYY-MM-DD" });
-      if (to && !isYMD(to)) return res.status(400).json({ error: "invalid_to", expected: "YYYY-MM-DD" });
+      if (from && !isYMD(from)) {
+        return res.status(400).json({ error: "invalid_from_format", expected: "YYYY-MM-DD" });
+      }
+      if (to && !isYMD(to)) {
+        return res.status(400).json({ error: "invalid_to_format", expected: "YYYY-MM-DD" });
+      }
       if (from) url.searchParams.set("from", from);
       if (to) url.searchParams.set("to", to);
     } else {
-      return res.status(400).json({ error: "missing_query", example: "/api/fixtures?date=2025-12-17" });
+      return res.status(400).json({ error: "missing_query", example: "/api/fixtures?date=2025-12-19" });
     }
 
+    // timezone (Chile)
     url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
 
-    const r = await fetch(url, { headers: { "x-apisports-key": process.env.APISPORTS_KEY } });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
+    const { ok, status, data } = await fetchJsonWithTimeout(
+      url.toString(),
+      { headers: { "x-apisports-key": process.env.APISPORTS_KEY } },
+      8000
+    );
+
+    if (!ok) {
+      return res.status(status).json({
+        error: "upstream_error",
+        status,
+        details: data,
+      });
+    }
 
     return res.json({
       query: { date: date || null, from: from || null, to: to || null },
@@ -84,16 +122,22 @@ app.get("/api/fixtures", async (req, res) => {
       response: data?.response ?? [],
     });
   } catch (e) {
+    // Si el fetch fue abortado por timeout, devolvemos 504 controlado (no el de Vercel)
+    if (String(e?.name) === "AbortError") {
+      return res.status(504).json({
+        error: "apisports_timeout",
+        message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente.",
+      });
+    }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });
 
 // ---------- ODDS ----------
-// /api/odds?fixture=NUMERO (ID del fixture)
 app.get("/api/odds", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing APISPORTS_KEY" });
+      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
     }
 
     const fixture = String(req.query.fixture || "").trim();
@@ -103,12 +147,15 @@ app.get("/api/odds", async (req, res) => {
     const url = new URL(`${apiSportsBase()}/odds`);
     url.searchParams.set("fixture", fixture);
 
-    const r = await fetch(url.toString(), {
-      headers: { "x-apisports-key": process.env.APISPORTS_KEY },
-    });
+    const { ok, status, data } = await fetchJsonWithTimeout(
+      url.toString(),
+      { headers: { "x-apisports-key": process.env.APISPORTS_KEY } },
+      8000
+    );
 
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) return res.status(r.status).json({ error: "upstream_error", details: data });
+    if (!ok) {
+      return res.status(status).json({ error: "upstream_error", status, details: data });
+    }
 
     const responses = data?.response || [];
     if (!responses.length) return res.json({ fixture, found: false, markets: {} });
@@ -150,6 +197,12 @@ app.get("/api/odds", async (req, res) => {
       raw_bookmakers: bookmakers.length,
     });
   } catch (e) {
+    if (String(e?.name) === "AbortError") {
+      return res.status(504).json({
+        error: "apisports_timeout",
+        message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente.",
+      });
+    }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });
