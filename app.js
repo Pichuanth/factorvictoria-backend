@@ -537,21 +537,22 @@ app.get("/api/referees/cards", async (req, res) => {
   }
 });
 
-// ---------- REFEREES (Tarjeteros) ----------
+// ---------- REFEREES / CARDS (MVP limpio) ----------
+// /api/referees/cards?from=YYYY-MM-DD&to=YYYY-MM-DD&country=Italy (country opcional)
 const TOP_REFEREES = [
-  { name: "Juan Soto", avgCards: 6.1 },
-  { name: "Matías Rojas", avgCards: 5.8 },
-  { name: "Pedro Díaz", avgCards: 5.6 },
-  { name: "Carlos Vera", avgCards: 5.5 },
-  { name: "Andrés Leiva", avgCards: 5.4 },
-  { name: "Sebastián Muñoz", avgCards: 5.3 },
-  { name: "Diego Paredes", avgCards: 5.2 },
-  { name: "Jorge Valencia", avgCards: 5.1 },
-  { name: "Felipe Contreras", avgCards: 5.0 },
-  { name: "Ricardo Fuentes", avgCards: 4.9 },
+  // Placeholder (luego lo reemplazamos por ranking real)
+  { name: "Michael Oliver", avgCards: 4.2 },
+  { name: "Anthony Taylor", avgCards: 4.6 },
+  { name: "Daniele Orsato", avgCards: 4.8 },
+  { name: "Szymon Marciniak", avgCards: 4.9 },
+  { name: "Mateu Lahoz", avgCards: 5.3 },
+  { name: "José María Sánchez", avgCards: 5.1 },
+  { name: "Clément Turpin", avgCards: 4.3 },
+  { name: "Felix Zwayer", avgCards: 4.7 },
+  { name: "Jesús Gil Manzano", avgCards: 5.2 },
+  { name: "Marco Guida", avgCards: 4.8 },
 ];
 
-// helper: normaliza strings
 function normStr(s) {
   return String(s || "")
     .toLowerCase()
@@ -570,200 +571,89 @@ app.get("/api/referees/cards", async (req, res) => {
     const to = String(req.query.to || "").trim();
     const country = String(req.query.country || "").trim(); // opcional
 
-    const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
     if (!from || !to) {
-      return res.status(400).json({ error: "missing_from_to", example: "/api/referees/cards?from=2025-12-26&to=2025-12-28" });
+      return res.status(400).json({
+        error: "missing_from_to",
+        example: "/api/referees/cards?from=2025-12-26&to=2025-12-28",
+      });
     }
     if (!isYMD(from) || !isYMD(to)) {
       return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
     }
 
-    // 1) Traer fixtures del rango (una sola llamada)
+    // 1 llamada: fixtures del rango
     const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+    const tz = process.env.APP_TZ || "America/Santiago";
+
     const url = new URL(`https://${host}/fixtures`);
     url.searchParams.set("from", from);
     url.searchParams.set("to", to);
-    url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
+    url.searchParams.set("timezone", tz);
 
     const { ok, status, data } = await fetchJsonWithTimeout(
       url.toString(),
-      { headers: { "x-apisports-key": process.env.APISPORTS_KEY } },
+      { headers: apisportsHeaders() },
       9000
     );
 
     if (!ok) {
-      return res.status(status).json({ error: "upstream_error", status, details: data });
-    }
-
-    const response = Array.isArray(data?.response) ? data.response : [];
-
-    // 2) Normalizar a una lista simple de partidos con referee
-    let matches = response.map((it) => {
-      const f = it.fixture || {};
-      const lg = it.league || {};
-      const teams = it.teams || {};
-      return {
-        id: f.id,
-        date: f.date,
-        timestamp: f.timestamp,
-        referee: f.referee || null,
-        league: { id: lg.id, name: lg.name, country: lg.country },
-        teams: {
-          home: { id: teams?.home?.id, name: teams?.home?.name },
-          away: { id: teams?.away?.id, name: teams?.away?.name },
-        },
-      };
-    });
-
-    // 3) Filtro opcional por país (igual que en frontend)
-    if (country) {
-      const cNorm = normStr(country);
-      matches = matches.filter((m) => normStr(m?.league?.country).includes(cNorm));
-    }
-
-    // 4) Buscar partido recomendado por top referee
-    const top = TOP_REFEREES.map((r) => ({
-      ...r,
-      key: normStr(r.name),
-    }));
-
-    const matchWithTopRef = matches.find((m) => {
-      const ref = normStr(m.referee);
-      if (!ref) return false;
-      return top.some((r) => ref.includes(r.key)); // includes para tolerar nombres compuestos
-    });
-
-    let recommended = null;
-    if (matchWithTopRef) {
-      const refNorm = normStr(matchWithTopRef.referee);
-      const refMeta = top.find((r) => refNorm.includes(r.key)) || null;
-
-      recommended = {
-        referee: {
-          name: refMeta?.name || matchWithTopRef.referee,
-          avgCards: refMeta?.avgCards ?? null,
-        },
-        fixture: matchWithTopRef,
-      };
-    }
-
-    // Cache corto
-    res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=60");
-
-    return res.status(200).json({
-      query: { from, to, country: country || null, tz: process.env.APP_TZ || "America/Santiago" },
-      topReferees: TOP_REFEREES,
-      recommended,
-      message: recommended
-        ? "OK"
-        : "Aún no se ha asignado un partido (con árbitro tarjetero top) en este rango. Prueba ampliando fechas o quitando filtro país.",
-      fixturesScanned: matches.length,
-    });
-  } catch (e) {
-    if (String(e?.name) === "AbortError") {
-      return res.status(504).json({ error: "apisports_timeout", message: "Timeout consultando API-Football." });
-    }
-    return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
-  }
-});
-// ---------- REFEREES (cards) ----------
-// /api/referees/cards?from=2025-12-26&to=2025-12-28&country=Chile
-app.get("/api/referees/cards", async (req, res) => {
-  try {
-    if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
-    }
-
-    const from = String(req.query.from || "").trim();
-    const to = String(req.query.to || "").trim();
-    const country = String(req.query.country || "").trim(); // EN (Chile, England, Spain, etc.)
-
-    const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
-    if (!isYMD(from) || !isYMD(to)) {
-      return res.status(400).json({
-        error: "invalid_date_range",
-        expected: "from=YYYY-MM-DD&to=YYYY-MM-DD",
-      });
-    }
-
-    // Top árbitros “fijos” (placeholder). Luego lo conectamos a datos reales.
-    const TOP_10 = [
-      { name: "Juan Soto", avgCards: 6.1 },
-      { name: "Matías Rojas", avgCards: 5.8 },
-      { name: "Pedro Díaz", avgCards: 5.6 },
-      { name: "Carlos Vera", avgCards: 5.5 },
-      { name: "Andrés Leiva", avgCards: 5.4 },
-      { name: "Rodrigo Fuentes", avgCards: 5.3 },
-      { name: "Ignacio Morales", avgCards: 5.2 },
-      { name: "Sebastián Paredes", avgCards: 5.1 },
-      { name: "Nicolás Herrera", avgCards: 5.0 },
-      { name: "Felipe Cárdenas", avgCards: 4.9 },
-    ];
-
-    // Buscamos partidos del rango (1 llamada) para poder mostrar “Partido recomendado”
-    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
-    const url = new URL(`https://${host}/fixtures`);
-    url.searchParams.set("from", from);
-    url.searchParams.set("to", to);
-    url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
-
-    // Si viene country, filtramos por country (API-FOOTBALL soporta country en algunas rutas/planes,
-    // si no aplica, simplemente lo ignorará y no rompe)
-    if (country) url.searchParams.set("country", country);
-
-    const { ok, status, data } = await fetchJsonWithTimeout(
-      url.toString(),
-      { headers: { "x-apisports-key": process.env.APISPORTS_KEY } },
-      8000
-    );
-
-    if (!ok) {
-      return res.status(status).json({
+      return res.status(status || 500).json({
         error: "upstream_error",
         status,
         details: data,
       });
     }
 
-    const items = Array.isArray(data?.response) ? data.response : [];
-    const now = Date.now();
+    let response = Array.isArray(data?.response) ? data.response : [];
 
-    // elegimos el primer partido futuro del rango para “recomendado”
-    const future = items.find((fx) => {
-      const ts = fx?.fixture?.timestamp;
-      if (ts) return Number(ts) * 1000 > now;
-      const iso = fx?.fixture?.date;
-      if (iso) {
-        const d = new Date(iso);
-        return !Number.isNaN(d.getTime()) && d.getTime() > now;
-      }
-      return false;
+    // filtro local por country (league.country)
+    if (country) {
+      const cNorm = normStr(country);
+      response = response.filter((it) => normStr(it?.league?.country).includes(cNorm));
+    }
+
+    // buscamos un partido donde el referee asignado coincida con alguno del TOP
+    const topNorm = TOP_REFEREES.map((r) => ({ ...r, key: normStr(r.name) }));
+
+    const match = response.find((it) => {
+      const ref = normStr(it?.fixture?.referee);
+      if (!ref) return false;
+      return topNorm.some((r) => ref.includes(r.key));
     });
 
-    const recommended = future
-      ? {
-          referee: TOP_10[0],
-          fixture: {
-            fixture: future.fixture,
-            league: future.league,
-            teams: future.teams,
-          },
-        }
-      : null;
+    let recommended = null;
+
+    if (match) {
+      const refName = String(match?.fixture?.referee || "").trim();
+      const refMeta = topNorm.find((r) => normStr(refName).includes(r.key));
+
+      recommended = {
+        referee: {
+          name: refMeta?.name || refName,
+          avgCards: refMeta?.avgCards ?? null,
+        },
+        fixture: {
+          fixture: match.fixture,
+          league: match.league,
+          teams: match.teams,
+        },
+      };
+    }
+
+    res.setHeader("Cache-Control", "s-maxage=120, stale-while-revalidate=60");
 
     return res.json({
-      query: { from, to, country: country || null, tz: process.env.APP_TZ || "America/Santiago" },
-      topReferees: TOP_10,
+      query: { from, to, country: country || null, tz },
+      topReferees: TOP_REFEREES,
       recommended,
-      note:
-        "Placeholder: Top árbitros fijo. Recomendado usa 1 partido futuro del rango. Luego conectamos a data real de tarjetas.",
+      message: recommended
+        ? "OK"
+        : "Aún no se ha asignado partido a un árbitro tarjetero top en este rango. Prueba ampliando fechas o quitando filtro país.",
+      fixturesScanned: response.length,
     });
   } catch (e) {
     if (String(e?.name) === "AbortError") {
-      return res.status(504).json({
-        error: "apisports_timeout",
-        message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente.",
-      });
+      return res.status(504).json({ error: "apisports_timeout", message: "Timeout consultando API-Football." });
     }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
