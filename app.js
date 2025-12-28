@@ -21,8 +21,27 @@ function apiSportsBase() {
   return `https://${process.env.APISPORTS_HOST || "v3.football.api-sports.io"}`;
 }
 
-// Fetch con timeout (clave para evitar 504 en Vercel)
-async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
+function apisportsHeaders() {
+  const API_KEY = process.env.APISPORTS_KEY;
+  const API_HOST = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
+  return {
+    "x-apisports-key": API_KEY,
+    "x-rapidapi-key": API_KEY,
+    "x-rapidapi-host": API_HOST,
+  };
+}
+
+// Fetch con timeout (evita 504)
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 9000) {
+  if (typeof fetch !== "function") {
+    // Si esto pasa, tu runtime no es Node 18+ en Vercel
+    return {
+      ok: false,
+      status: 500,
+      data: { error: "fetch_not_available", hint: "Configura Node.js 18+ en Vercel (Project Settings -> General -> Node.js Version)." },
+    };
+  }
+
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -54,22 +73,7 @@ function diffDays(fromYMD, toYMD) {
   return Math.floor((b - a) / (24 * 3600 * 1000));
 }
 
-function apisportsHeaders() {
-  const API_KEY = process.env.APISPORTS_KEY;
-  const API_HOST = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
-
-  // Para cubrir ambos escenarios:
-  // - API-Sports directo: x-apisports-key
-  // - RapidAPI: x-rapidapi-key + x-rapidapi-host
-  return {
-    "x-apisports-key": API_KEY,
-    "x-rapidapi-key": API_KEY,
-    "x-rapidapi-host": API_HOST,
-  };
-}
-
 function normalizeFixtureItems(responseArray) {
-  // Normaliza a un formato consistente para el frontend si quieres usar data.items
   const response = Array.isArray(responseArray) ? responseArray : [];
   return response.map((it) => {
     const f = it.fixture || {};
@@ -90,12 +94,8 @@ function normalizeFixtureItems(responseArray) {
       },
       country: lg.country,
       teams: {
-        home: teams.home
-          ? { id: teams.home.id, name: teams.home.name, logo: teams.home.logo }
-          : null,
-        away: teams.away
-          ? { id: teams.away.id, name: teams.away.name, logo: teams.away.logo }
-          : null,
+        home: teams.home ? { id: teams.home.id, name: teams.home.name, logo: teams.home.logo } : null,
+        away: teams.away ? { id: teams.away.id, name: teams.away.name, logo: teams.away.logo } : null,
       },
       goals: {
         home: goals.home,
@@ -103,6 +103,15 @@ function normalizeFixtureItems(responseArray) {
       },
     };
   });
+}
+
+function normStr(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ---------- HEALTH ----------
@@ -128,15 +137,12 @@ app.get("/api/health", async (req, res) => {
     dbOk,
     hasApiKey: !!process.env.APISPORTS_KEY,
     hasHost: !!process.env.APISPORTS_HOST,
+    hasFetch: typeof fetch === "function",
     now: new Date().toISOString(),
   });
 });
 
 // ---------- FIXTURES ----------
-// /api/fixtures?date=2025-12-20
-// /api/fixtures?from=2025-12-20&to=2025-12-21
-// Opcional: /api/fixtures?from=...&to=...&country=England
-// Opcional: /api/fixtures?date=...&q=arsenal
 app.get("/api/fixtures", async (req, res) => {
   try {
     if (!process.env.APISPORTS_KEY) {
@@ -149,29 +155,16 @@ app.get("/api/fixtures", async (req, res) => {
     const country = String(req.query.country || "").trim();
     const q = String(req.query.q || "").trim();
 
-    // Validación básica de fechas
-    if (date && !isYMD(date)) {
-      return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
-    }
-    if (from && !isYMD(from)) {
-      return res.status(400).json({ error: "invalid_from_format", expected: "YYYY-MM-DD" });
-    }
-    if (to && !isYMD(to)) {
-      return res.status(400).json({ error: "invalid_to_format", expected: "YYYY-MM-DD" });
-    }
+    if (date && !isYMD(date)) return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
+    if (from && !isYMD(from)) return res.status(400).json({ error: "invalid_from_format", expected: "YYYY-MM-DD" });
+    if (to && !isYMD(to)) return res.status(400).json({ error: "invalid_to_format", expected: "YYYY-MM-DD" });
 
     const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
     const tz = process.env.APP_TZ || "America/Santiago";
 
-    // Construye URL base
     const baseUrl = new URL(`https://${host}/fixtures`);
     baseUrl.searchParams.set("timezone", tz);
 
-    // Estrategia:
-    // 1) Si viene date -> un request.
-    // 2) Si viene from/to:
-    //    2.1) primero intentamos rango (from/to).
-    //    2.2) si devuelve 0, hacemos fallback día a día (máx 10 días) para evitar quedar en 0.
     let upstreamTried = [];
     let finalResponse = [];
     let finalResults = 0;
@@ -181,16 +174,18 @@ app.get("/api/fixtures", async (req, res) => {
 
     async function callUpstream(urlObj) {
       const urlStr = urlObj.toString();
-      const { ok, status, data } = await fetchJsonWithTimeout(
-        urlStr,
-        { headers },
-        9000
-      );
-      upstreamTried.push({ url: urlStr, ok, status, results: data?.results ?? null, errors: data?.errors ?? null });
+      const { ok, status, data } = await fetchJsonWithTimeout(urlStr, { headers }, 9000);
 
-      if (!ok) {
-        return { ok, status, data };
-      }
+      upstreamTried.push({
+        url: urlStr,
+        ok,
+        status,
+        results: data?.results ?? null,
+        errors: data?.errors ?? null,
+      });
+
+      if (!ok) return { ok, status, data };
+
       const resp = Array.isArray(data?.response) ? data.response : [];
       return { ok: true, status, data, resp, results: data?.results ?? resp.length ?? 0 };
     }
@@ -210,9 +205,8 @@ app.get("/api/fixtures", async (req, res) => {
       }
 
       finalResponse = r1.resp || [];
-      finalResults = r1.results ?? (finalResponse.length || 0);
+      finalResults = r1.results ?? finalResponse.length;
     } else if (from || to) {
-      // Si solo viene from o solo to, igual lo intentamos (pero ideal ambos)
       const uRange = new URL(baseUrl.toString());
       if (from && to && from === to) {
         uRange.searchParams.set("date", from);
@@ -232,14 +226,12 @@ app.get("/api/fixtures", async (req, res) => {
       }
 
       finalResponse = rRange.resp || [];
-      finalResults = rRange.results ?? (finalResponse.length || 0);
+      finalResults = rRange.results ?? finalResponse.length;
 
-      // Fallback si vino 0
       if (finalResults === 0 && from && to && from !== to) {
         const days = diffDays(from, to);
-        const maxDays = 10; // límite seguro para no reventar runtime
+        const maxDays = 10;
         const span = Math.min(Math.max(days, 0), maxDays - 1);
-
         usedFallback = true;
 
         const byId = new Map();
@@ -268,7 +260,6 @@ app.get("/api/fixtures", async (req, res) => {
       });
     }
 
-    // Aplica filtros opcionales en nuestro lado (country / q)
     let filtered = finalResponse;
 
     if (country) {
@@ -279,12 +270,7 @@ app.get("/api/fixtures", async (req, res) => {
     if (q) {
       const qNorm = q.toLowerCase();
       filtered = filtered.filter((it) => {
-        const text = [
-          it?.league?.name,
-          it?.league?.country,
-          it?.teams?.home?.name,
-          it?.teams?.away?.name,
-        ]
+        const text = [it?.league?.name, it?.league?.country, it?.teams?.home?.name, it?.teams?.away?.name]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
@@ -292,139 +278,21 @@ app.get("/api/fixtures", async (req, res) => {
       });
     }
 
-    // Normalizamos a items también (para que tu frontend pueda usar data.items si quiere)
     const items = normalizeFixtureItems(filtered);
 
-    // Cache cortita (Vercel)
     res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=30");
 
     return res.status(200).json({
-      query: {
-        date: date || null,
-        from: from || null,
-        to: to || null,
-        country: country || null,
-        q: q || null,
-        tz,
-      },
+      query: { date: date || null, from: from || null, to: to || null, country: country || null, q: q || null, tz },
       results: items.length,
       usedFallback,
-      response: filtered, // raw API-Football-ish
-      items, // normalizado
-      debug: {
-        upstreamTried,
-      },
+      response: filtered,
+      items,
+      debug: { upstreamTried },
     });
   } catch (e) {
     if (String(e?.name) === "AbortError") {
-      return res.status(504).json({
-        error: "apisports_timeout",
-        message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente.",
-      });
-    }
-    return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
-  }
-});
-// ---------- REFEREES / CARDS (MVP) ----------
-// /api/referees/cards?from=2025-12-26&to=2025-12-28&country=Italy (country opcional, se filtra local)
-app.get("/api/referees/cards", async (req, res) => {
-  try {
-    if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
-    }
-
-    const from = String(req.query.from || "").trim();
-    const to = String(req.query.to || "").trim();
-    const country = String(req.query.country || "").trim(); // opcional (filtrado local)
-
-    const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
-    if (!from || !to) {
-      return res.status(400).json({ error: "missing_query", example: "/api/referees/cards?from=2025-12-26&to=2025-12-28" });
-    }
-    if (!isYMD(from) || !isYMD(to)) {
-      return res.status(400).json({ error: "invalid_date_format", expected: "YYYY-MM-DD" });
-    }
-
-    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
-    const url = new URL(`https://${host}/fixtures`);
-    url.searchParams.set("from", from);
-    url.searchParams.set("to", to);
-    url.searchParams.set("timezone", process.env.APP_TZ || "America/Santiago");
-
-    // OJO: aquí hacemos 1 llamada (fixtures) para no “quemar” cuota con muchos endpoints.
-    const { ok, status, data } = await fetchJsonWithTimeout(
-      url.toString(),
-      {
-        headers: {
-          "x-apisports-key": process.env.APISPORTS_KEY,
-          "x-rapidapi-key": process.env.APISPORTS_KEY,
-          "x-rapidapi-host": host,
-        },
-      },
-      8000
-    );
-
-    if (!ok) {
-      return res.status(status).json({ error: "upstream_error", status, details: data });
-    }
-
-    const response = Array.isArray(data?.response) ? data.response : [];
-
-    // Filtrado local por country (liga.country)
-    const filtered = country
-      ? response.filter((it) => String(it?.league?.country || "").toLowerCase().includes(country.toLowerCase()))
-      : response;
-
-    // Agrupamos por árbitro asignado en fixture.referee (si viene)
-    const byRef = new Map();
-    for (const it of filtered) {
-      const name = String(it?.fixture?.referee || "").trim();
-      if (!name) continue;
-
-      const cur = byRef.get(name) || { name, matches: 0 };
-      cur.matches += 1;
-      byRef.set(name, cur);
-    }
-
-    // Orden simple por “más partidos en el rango” (MVP).
-    // Más adelante reemplazas esto por promedio real de tarjetas (con BD/eventos), pero sin reventar cuota.
-    const topReferees = Array.from(byRef.values())
-      .sort((a, b) => b.matches - a.matches)
-      .slice(0, 10)
-      .map((r) => ({ ...r, avgCards: null })); // avgCards lo llenaremos cuando tengamos histórico real
-
-    // Partido recomendado: el primero que tenga referee asignado (MVP)
-    const pick = filtered.find((it) => String(it?.fixture?.referee || "").trim());
-    const recommended = pick
-      ? {
-          referee: { name: String(pick.fixture.referee).trim(), avgCards: null },
-          fixture: {
-            id: pick?.fixture?.id,
-            date: pick?.fixture?.date,
-            timestamp: pick?.fixture?.timestamp,
-            league: {
-              id: pick?.league?.id,
-              name: pick?.league?.name,
-              country: pick?.league?.country,
-            },
-            teams: {
-              home: { id: pick?.teams?.home?.id, name: pick?.teams?.home?.name, logo: pick?.teams?.home?.logo },
-              away: { id: pick?.teams?.away?.id, name: pick?.teams?.away?.name, logo: pick?.teams?.away?.logo },
-            },
-          },
-        }
-      : null;
-
-    return res.json({
-      query: { from, to, country: country || null, tz: process.env.APP_TZ || "America/Santiago" },
-      totalFixtures: response.length,
-      filteredFixtures: filtered.length,
-      topReferees,
-      recommended,
-    });
-  } catch (e) {
-    if (String(e?.name) === "AbortError") {
-      return res.status(504).json({ error: "apisports_timeout", message: "Timeout consultando API-FOOTBALL." });
+      return res.status(504).json({ error: "apisports_timeout", message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente." });
     }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
@@ -433,9 +301,7 @@ app.get("/api/referees/cards", async (req, res) => {
 // ---------- ODDS ----------
 app.get("/api/odds", async (req, res) => {
   try {
-    if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
-    }
+    if (!process.env.APISPORTS_KEY) return res.status(400).json({ error: "missing_APISPORTS_KEY" });
 
     const fixture = String(req.query.fixture || "").trim();
     if (!fixture) return res.status(400).json({ error: "missing_fixture" });
@@ -444,15 +310,9 @@ app.get("/api/odds", async (req, res) => {
     const url = new URL(`${apiSportsBase()}/odds`);
     url.searchParams.set("fixture", fixture);
 
-    const { ok, status, data } = await fetchJsonWithTimeout(
-      url.toString(),
-      { headers: apisportsHeaders() },
-      8000
-    );
+    const { ok, status, data } = await fetchJsonWithTimeout(url.toString(), { headers: apisportsHeaders() }, 8000);
 
-    if (!ok) {
-      return res.status(status).json({ error: "upstream_error", status, details: data });
-    }
+    if (!ok) return res.status(status).json({ error: "upstream_error", status, details: data });
 
     const responses = data?.response || [];
     if (!responses.length) return res.json({ fixture, found: false, markets: {} });
@@ -495,77 +355,30 @@ app.get("/api/odds", async (req, res) => {
     });
   } catch (e) {
     if (String(e?.name) === "AbortError") {
-      return res.status(504).json({
-        error: "apisports_timeout",
-        message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente.",
-      });
+      return res.status(504).json({ error: "apisports_timeout", message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente." });
     }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
 });
-// ---------- REFEREES (placeholder / MVP) ----------
-// GET /api/referees/cards?from=YYYY-MM-DD&to=YYYY-MM-DD&country=Chile
-app.get("/api/referees/cards", async (req, res) => {
-  try {
-    const from = String(req.query.from || "").trim();
-    const to = String(req.query.to || "").trim();
-    const country = String(req.query.country || "").trim();
 
-    // MVP: data fija (para que el frontend funcione hoy)
-    // Luego lo conectamos a API-FOOTBALL + cache DB.
-    const topReferees = [
-      { name: "Juan Soto", avgCards: 6.1 },
-      { name: "Matías Rojas", avgCards: 5.8 },
-      { name: "Pedro Díaz", avgCards: 5.6 },
-      { name: "Carlos Vera", avgCards: 5.5 },
-      { name: "Andrés Leiva", avgCards: 5.4 },
-      { name: "Jorge Morales", avgCards: 5.3 },
-      { name: "Rodrigo Núñez", avgCards: 5.2 },
-      { name: "Nicolás Pardo", avgCards: 5.1 },
-      { name: "Felipe Lagos", avgCards: 5.0 },
-      { name: "Sebastián Araya", avgCards: 4.9 },
-    ];
-
-    // recommended: por ahora null (después lo asignamos a un partido real del rango)
-    return res.json({
-      query: { from: from || null, to: to || null, country: country || null },
-      topReferees,
-      recommended: null,
-    });
-  } catch (e) {
-    return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
-  }
-});
-
-// ---------- REFEREES / CARDS (MVP limpio) ----------
-// /api/referees/cards?from=YYYY-MM-DD&to=YYYY-MM-DD&country=Italy (country opcional)
+// ---------- REFEREES (Tarjeteros MVP) ----------
+// GET /api/referees/cards?from=YYYY-MM-DD&to=YYYY-MM-DD&country=Italy (country opcional)
 const TOP_REFEREES = [
-  // Placeholder (luego lo reemplazamos por ranking real)
-  { name: "Michael Oliver", avgCards: 4.2 },
-  { name: "Anthony Taylor", avgCards: 4.6 },
-  { name: "Daniele Orsato", avgCards: 4.8 },
-  { name: "Szymon Marciniak", avgCards: 4.9 },
-  { name: "Mateu Lahoz", avgCards: 5.3 },
-  { name: "José María Sánchez", avgCards: 5.1 },
-  { name: "Clément Turpin", avgCards: 4.3 },
-  { name: "Felix Zwayer", avgCards: 4.7 },
-  { name: "Jesús Gil Manzano", avgCards: 5.2 },
-  { name: "Marco Guida", avgCards: 4.8 },
+  { name: "Anthony Taylor", avgCards: 4.6, leagues: ["England"] },
+  { name: "Michael Oliver", avgCards: 4.2, leagues: ["England"] },
+  { name: "Daniele Orsato", avgCards: 4.8, leagues: ["Italy"] },
+  { name: "Marco Guida", avgCards: 5.1, leagues: ["Italy"] },
+  { name: "José María Sánchez", avgCards: 5.4, leagues: ["Spain"] },
+  { name: "Mateu Lahoz", avgCards: 5.8, leagues: ["Spain"] },
+  { name: "Clément Turpin", avgCards: 4.3, leagues: ["France"] },
+  { name: "Benoît Bastien", avgCards: 4.9, leagues: ["France"] },
+  { name: "Felix Zwayer", avgCards: 5.2, leagues: ["Germany"] },
+  { name: "Daniel Siebert", avgCards: 4.7, leagues: ["Germany"] },
 ];
 
-function normStr(s) {
-  return String(s || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim();
-}
-
 app.get("/api/referees/cards", async (req, res) => {
   try {
-    if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
-    }
+    if (!process.env.APISPORTS_KEY) return res.status(400).json({ error: "missing_APISPORTS_KEY" });
 
     const from = String(req.query.from || "").trim();
     const to = String(req.query.to || "").trim();
@@ -584,17 +397,12 @@ app.get("/api/referees/cards", async (req, res) => {
     // 1 llamada: fixtures del rango
     const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
     const tz = process.env.APP_TZ || "America/Santiago";
-
     const url = new URL(`https://${host}/fixtures`);
     url.searchParams.set("from", from);
     url.searchParams.set("to", to);
     url.searchParams.set("timezone", tz);
 
-    const { ok, status, data } = await fetchJsonWithTimeout(
-      url.toString(),
-      { headers: apisportsHeaders() },
-      9000
-    );
+    const { ok, status, data } = await fetchJsonWithTimeout(url.toString(), { headers: apisportsHeaders() }, 9000);
 
     if (!ok) {
       return res.status(status || 500).json({
@@ -612,30 +420,31 @@ app.get("/api/referees/cards", async (req, res) => {
       response = response.filter((it) => normStr(it?.league?.country).includes(cNorm));
     }
 
-    // buscamos un partido donde el referee asignado coincida con alguno del TOP
+    // Buscamos un partido donde el referee asignado coincida con alguno del TOP
     const topNorm = TOP_REFEREES.map((r) => ({ ...r, key: normStr(r.name) }));
 
-    const match = response.find((it) => {
+    const pick = response.find((it) => {
       const ref = normStr(it?.fixture?.referee);
       if (!ref) return false;
       return topNorm.some((r) => ref.includes(r.key));
     });
 
     let recommended = null;
-
-    if (match) {
-      const refName = String(match?.fixture?.referee || "").trim();
-      const refMeta = topNorm.find((r) => normStr(refName).includes(r.key));
+    if (pick) {
+      const refRaw = String(pick?.fixture?.referee || "").trim();
+      const refMeta = topNorm.find((r) => normStr(refRaw).includes(r.key)) || null;
 
       recommended = {
-        referee: {
-          name: refMeta?.name || refName,
-          avgCards: refMeta?.avgCards ?? null,
-        },
+        referee: { name: refMeta?.name || refRaw, avgCards: refMeta?.avgCards ?? null },
         fixture: {
-          fixture: match.fixture,
-          league: match.league,
-          teams: match.teams,
+          id: pick?.fixture?.id,
+          date: pick?.fixture?.date,
+          timestamp: pick?.fixture?.timestamp,
+          league: { id: pick?.league?.id, name: pick?.league?.name, country: pick?.league?.country },
+          teams: {
+            home: { id: pick?.teams?.home?.id, name: pick?.teams?.home?.name, logo: pick?.teams?.home?.logo },
+            away: { id: pick?.teams?.away?.id, name: pick?.teams?.away?.name, logo: pick?.teams?.away?.logo },
+          },
         },
       };
     }
@@ -648,12 +457,12 @@ app.get("/api/referees/cards", async (req, res) => {
       recommended,
       message: recommended
         ? "OK"
-        : "Aún no se ha asignado partido a un árbitro tarjetero top en este rango. Prueba ampliando fechas o quitando filtro país.",
+        : "Aún no se ha asignado un partido con árbitro top en este rango. Prueba ampliando fechas o quitando el filtro país.",
       fixturesScanned: response.length,
     });
   } catch (e) {
     if (String(e?.name) === "AbortError") {
-      return res.status(504).json({ error: "apisports_timeout", message: "Timeout consultando API-Football." });
+      return res.status(504).json({ error: "apisports_timeout", message: "Timeout consultando API-FOOTBALL." });
     }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
