@@ -145,9 +145,6 @@ app.get("/api/health", async (req, res) => {
 // ---------- FIXTURES ----------
 app.get("/api/fixtures", async (req, res) => {
   try {
-    if (!process.env.APISPORTS_KEY) {
-      return res.status(400).json({ error: "missing_APISPORTS_KEY" });
-    }
 
     const date = String(req.query.date || "").trim();
     const from = String(req.query.from || "").trim();
@@ -293,6 +290,39 @@ app.get("/api/fixtures", async (req, res) => {
   } catch (e) {
     if (String(e?.name) === "AbortError") {
       return res.status(504).json({ error: "apisports_timeout", message: "API-FOOTBALL no respondió a tiempo (timeout). Intenta nuevamente." });
+    }
+    return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
+  }
+});
+// ---------- FIXTURE STATISTICS ----------
+app.get("/api/fixture/:id/statistics", async (req, res) => {
+  try {
+    if (!process.env.APISPORTS_KEY) return res.status(400).json({ error: "missing_APISPORTS_KEY" });
+
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: "missing_fixture_id" });
+
+    const url = new URL(`${apiSportsBase()}/fixtures/statistics`);
+    url.searchParams.set("fixture", id);
+
+    const { ok, status, data } = await fetchJsonWithTimeout(
+      url.toString(),
+      { headers: apisportsHeaders() },
+      8000
+    );
+
+    if (!ok) {
+      return res.status(status || 500).json({
+        error: "upstream_error",
+        status,
+        details: data,
+      });
+    }
+
+    return res.json(data);
+  } catch (e) {
+    if (String(e?.name) === "AbortError") {
+      return res.status(504).json({ error: "apisports_timeout", message: "API-FOOTBALL no respondió a tiempo (timeout)." });
     }
     return res.status(500).json({ error: "server_error", message: e?.message || String(e) });
   }
