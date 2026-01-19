@@ -8,6 +8,8 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+const oddsRoutes = require("./routes/odds");
+app.use("/api/odds", oddsRoutes);
 
 // ---------- DB (opcional) ----------
 const pool = process.env.DATABASE_URL
