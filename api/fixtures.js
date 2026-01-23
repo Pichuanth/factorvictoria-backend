@@ -1,7 +1,15 @@
 // backend/api/fixtures.js (Vercel Serverless Function)
 
+function norm(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
 module.exports = async (req, res) => {
-  // --- CORS ---
+  // ---- CORS (allowlist) ----
   const allow = new Set([
     "https://factorvictoria.com",
     "https://www.factorvictoria.com",
@@ -9,104 +17,123 @@ module.exports = async (req, res) => {
   ]);
 
   const origin = req.headers.origin;
-  if (origin && allow.has(origin)) {
+  if (allow.has(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
   } else {
     res.setHeader("Access-Control-Allow-Origin", "https://factorvictoria.com");
   }
 
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-token");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, x-admin-token"
+  );
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    const key = process.env.APISPORTS_KEY;
-    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
-    const tz = process.env.APP_TZ || "America/Santiago";
+    const from = req.query.from; // YYYY-MM-DD
+    const to = req.query.to;     // YYYY-MM-DD
+    const country = req.query.country; // opcional
+    const q = req.query.q; // opcional
 
-    if (!key) {
-      return res.status(200).json({
-        items: [],
-        note: "APISPORTS_KEY missing on server.",
-      });
-    }
-
-    // --- params ---
-    const from = String(req.query.from || "").trim(); // YYYY-MM-DD
-    const to = String(req.query.to || "").trim();     // YYYY-MM-DD
-    const country = String(req.query.country || "").trim(); // "Chile" etc.
-    const q = String(req.query.q || "").trim(); // texto libre
-
-    // Reglas mínimas: desde/hasta requeridos para tu frontend actual
     if (!from || !to) {
       return res.status(400).json({ error: "from and to are required (YYYY-MM-DD)" });
     }
 
-    // API-Sports Fixtures soporta from/to en muchos planes, y timezone como query
-    const apiParams = new URLSearchParams();
-    apiParams.set("from", from);
-    apiParams.set("to", to);
-    apiParams.set("timezone", tz);
+    const key = process.env.APISPORTS_KEY;
+    const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
 
-    // Si viene country, lo usamos como filtro principal
-    // (API-Sports suele filtrar por league/country vía "league", pero "country" existe en varios endpoints;
-    // si tu plan no lo soporta, lo filtramos después en backend.)
-    if (country) apiParams.set("country", country);
-
-    const url = `https://${host}/fixtures?${apiParams.toString()}`;
-
-    const r = await fetch(url, {
-      headers: {
-        "x-apisports-key": key,
-        "x-rapidapi-host": host,
-      },
-    });
-
-    const data = await r.json().catch(() => null);
-
-    if (!r.ok) {
+    // ✅ Si no hay key en Vercel, NO crashear (esto hoy te evita el 500)
+    if (!key) {
       return res.status(200).json({
         items: [],
-        note: `API-SPORTS error ${r.status}`,
-        raw: data,
+        note: "APISPORTS_KEY missing on server (Vercel env var not set).",
       });
     }
 
-    const response = Array.isArray(data?.response) ? data.response : [];
+    // API-SPORTS fixtures endpoint usa date=YYYY-MM-DD (un día por request).
+    // Para rango, iteramos día a día.
+    const start = new Date(`${from}T00:00:00Z`);
+    const end = new Date(`${to}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
+    }
+    if (end < start) {
+      return res.status(400).json({ error: "to must be >= from" });
+    }
 
-    // --- filtro texto libre en backend (para tu input "q") ---
-    let items = response;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const days = Math.floor((end.getTime() - start.getTime()) / dayMs) + 1;
 
-    if (q) {
-      const needle = q.toLowerCase();
-      items = items.filter((fx) => {
-        const league = fx?.league?.name || "";
-        const countryName = fx?.league?.country || "";
-        const home = fx?.teams?.home?.name || "";
-        const away = fx?.teams?.away?.name || "";
-        const blob = `${league} ${countryName} ${home} ${away}`.toLowerCase();
-        return blob.includes(needle);
+    // límite prudente para serverless (evitar timeouts)
+    if (days > 14) {
+      return res.status(400).json({
+        error: "Range too large. Use max 14 days per request.",
       });
     }
 
-    // Normaliza a tu formato esperado por frontend
+    const all = [];
+
+    for (let i = 0; i < days; i++) {
+      const d = new Date(start.getTime() + i * dayMs);
+      const yyyy = d.getUTCFullYear();
+      const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(d.getUTCDate()).padStart(2, "0");
+      const dateStr = `${yyyy}-${mm}-${dd}`;
+
+      const url = new URL(`https://${host}/fixtures`);
+      url.searchParams.set("date", dateStr);
+
+      // si viene country, lo mandamos (API-SPORTS espera nombre en inglés usualmente)
+      if (country) url.searchParams.set("country", String(country));
+
+      const r = await fetch(url.toString(), {
+        headers: {
+          "x-apisports-key": key,
+          "x-rapidapi-host": host,
+        },
+      });
+
+      const data = await r.json().catch(() => null);
+
+      if (!r.ok) {
+        // no rompemos todo: devolvemos lo que haya + nota
+        return res.status(200).json({
+          items: [],
+          note: `API-SPORTS error ${r.status} on date=${dateStr}`,
+          raw: data,
+        });
+      }
+
+      const response = Array.isArray(data?.response) ? data.response : [];
+      for (const fx of response) all.push(fx);
+    }
+
+    // filtro local por q (pais/liga/equipos)
+    const qn = norm(q);
+    const filtered = qn
+      ? all.filter((fx) => {
+          const league = norm(fx?.league?.name);
+          const ctry = norm(fx?.league?.country);
+          const home = norm(fx?.teams?.home?.name);
+          const away = norm(fx?.teams?.away?.name);
+          return (
+            league.includes(qn) ||
+            ctry.includes(qn) ||
+            home.includes(qn) ||
+            away.includes(qn)
+          );
+        })
+      : all;
+
     return res.status(200).json({
-      items,
-      meta: {
-        from,
-        to,
-        country: country || null,
-        q: q || null,
-        count: items.length,
-        tz,
-      },
+      items: filtered,
+      total: filtered.length,
     });
   } catch (err) {
-    // ESTE catch evita el 500 visible
-    return res.status(200).json({
-      items: [],
+    return res.status(500).json({
       error: "fixtures function crashed",
       detail: String(err?.message || err),
     });
