@@ -8,6 +8,21 @@ function norm(s) {
     .trim();
 }
 
+function isYYYYMMDD(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+}
+
+function addDaysYYYYMMDD(dateStr, days) {
+  // dateStr: YYYY-MM-DD (sin zona)
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0)); // 12:00 UTC evita DST edge
+  dt.setUTCDate(dt.getUTCDate() + Number(days || 0));
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
 module.exports = async (req, res) => {
   // ---- CORS (allowlist) ----
   const allow = new Set([
@@ -17,76 +32,53 @@ module.exports = async (req, res) => {
   ]);
 
   const origin = req.headers.origin;
-  if (allow.has(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "https://factorvictoria.com");
-  }
-
+  res.setHeader("Access-Control-Allow-Origin", allow.has(origin) ? origin : "https://factorvictoria.com");
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, x-admin-token"
-  );
-
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-token");
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    const from = req.query.from; // YYYY-MM-DD
-    const to = req.query.to;     // YYYY-MM-DD
-    const country = req.query.country; // opcional
-    const q = req.query.q; // opcional
+    const from = req.query.from;        // YYYY-MM-DD
+    const to = req.query.to;            // YYYY-MM-DD
+    const country = req.query.country;  // opcional
+    const q = req.query.q;              // opcional
 
-    if (!from || !to) {
+    if (!isYYYYMMDD(from) || !isYYYYMMDD(to)) {
       return res.status(400).json({ error: "from and to are required (YYYY-MM-DD)" });
     }
 
     const key = process.env.APISPORTS_KEY;
     const host = process.env.APISPORTS_HOST || "v3.football.api-sports.io";
 
-    // ✅ Si no hay key en Vercel, NO crashear (esto hoy te evita el 500)
     if (!key) {
-      return res.status(200).json({
-        items: [],
-        note: "APISPORTS_KEY missing on server (Vercel env var not set).",
-      });
+      return res.status(200).json({ items: [], note: "APISPORTS_KEY missing on server (Vercel env var not set)." });
     }
 
-    // API-SPORTS fixtures endpoint usa date=YYYY-MM-DD (un día por request).
-    // Para rango, iteramos día a día.
-    const start = new Date(`${from}T00:00:00Z`);
-    const end = new Date(`${to}T00:00:00Z`);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-      return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD" });
-    }
-    if (end < start) {
-      return res.status(400).json({ error: "to must be >= from" });
-    }
+    // Calcula days sin depender de TZ local
+    // (máx 14 días)
+    let days = 1;
+    {
+      const [y1, m1, d1] = from.split("-").map(Number);
+      const [y2, m2, d2] = to.split("-").map(Number);
+      const a = Date.UTC(y1, m1 - 1, d1, 12, 0, 0);
+      const b = Date.UTC(y2, m2 - 1, d2, 12, 0, 0);
+      if (b < a) return res.status(400).json({ error: "to must be >= from" });
 
-    const dayMs = 24 * 60 * 60 * 1000;
-    const days = Math.floor((end.getTime() - start.getTime()) / dayMs) + 1;
-
-    // límite prudente para serverless (evitar timeouts)
-    if (days > 14) {
-      return res.status(400).json({
-        error: "Range too large. Use max 14 days per request.",
-      });
+      const dayMs = 24 * 60 * 60 * 1000;
+      days = Math.floor((b - a) / dayMs) + 1;
+      if (days > 14) {
+        return res.status(400).json({ error: "Range too large. Use max 14 days per request." });
+      }
     }
 
     const all = [];
 
     for (let i = 0; i < days; i++) {
-      const d = new Date(start.getTime() + i * dayMs);
-      const yyyy = d.getUTCFullYear();
-      const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-      const dd = String(d.getUTCDate()).padStart(2, "0");
-      const dateStr = `${yyyy}-${mm}-${dd}`;
+      const dateStr = addDaysYYYYMMDD(from, i);
 
       const url = new URL(`https://${host}/fixtures`);
       url.searchParams.set("date", dateStr);
-
-      // si viene country, lo mandamos (API-SPORTS espera nombre en inglés usualmente)
       if (country) url.searchParams.set("country", String(country));
 
       const r = await fetch(url.toString(), {
@@ -99,7 +91,6 @@ module.exports = async (req, res) => {
       const data = await r.json().catch(() => null);
 
       if (!r.ok) {
-        // no rompemos todo: devolvemos lo que haya + nota
         return res.status(200).json({
           items: [],
           note: `API-SPORTS error ${r.status} on date=${dateStr}`,
@@ -111,7 +102,6 @@ module.exports = async (req, res) => {
       for (const fx of response) all.push(fx);
     }
 
-    // filtro local por q (pais/liga/equipos)
     const qn = norm(q);
     const filtered = qn
       ? all.filter((fx) => {
@@ -119,23 +109,12 @@ module.exports = async (req, res) => {
           const ctry = norm(fx?.league?.country);
           const home = norm(fx?.teams?.home?.name);
           const away = norm(fx?.teams?.away?.name);
-          return (
-            league.includes(qn) ||
-            ctry.includes(qn) ||
-            home.includes(qn) ||
-            away.includes(qn)
-          );
+          return league.includes(qn) || ctry.includes(qn) || home.includes(qn) || away.includes(qn);
         })
       : all;
 
-    return res.status(200).json({
-      items: filtered,
-      total: filtered.length,
-    });
+    return res.status(200).json({ items: filtered, total: filtered.length });
   } catch (err) {
-    return res.status(500).json({
-      error: "fixtures function crashed",
-      detail: String(err?.message || err),
-    });
+    return res.status(500).json({ error: "fixtures function crashed", detail: String(err?.message || err) });
   }
 };
