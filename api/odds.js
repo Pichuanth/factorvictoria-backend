@@ -1,42 +1,37 @@
 // backend/api/odds.js (Vercel Serverless Function)
 
-function pickBestBookmaker(responseItem) {
-  // responseItem.bookmakers: [{ id, name, bets: [...] }]
+function pickFirstBookmaker(responseItem) {
   const bms = Array.isArray(responseItem?.bookmakers) ? responseItem.bookmakers : [];
-  // si existe "1xBet" u otro preferido, lo priorizas
-  const preferred = ["1xbet", "bet365", "pinnacle"];
-  for (const p of preferred) {
-    const found = bms.find((b) => String(b?.name || "").toLowerCase().includes(p));
-    if (found) return found;
-  }
   return bms[0] || null;
 }
 
-function getBet(bookmaker, betName) {
+function marketByName(bookmaker, name) {
   const bets = Array.isArray(bookmaker?.bets) ? bookmaker.bets : [];
-  return bets.find((b) => String(b?.name || "").toLowerCase() === String(betName).toLowerCase()) || null;
+  return bets.find((b) => String(b?.name || "").toLowerCase() === String(name).toLowerCase()) || null;
 }
 
-function valOdd(bet, valueLabel) {
-  const values = Array.isArray(bet?.values) ? bet.values : [];
-  const v = values.find((x) => String(x?.value) === String(valueLabel));
-  const o = v?.odd;
-  const n = Number(o);
+function valueOdd(market, label) {
+  const values = Array.isArray(market?.values) ? market.values : [];
+  const v = values.find((x) => String(x?.value || "").toLowerCase() === String(label).toLowerCase());
+  const n = v ? Number(v.odd) : null;
   return Number.isFinite(n) ? n : null;
 }
 
 module.exports = async (req, res) => {
-  // CORS allowlist
+  // CORS
   const allow = new Set([
     "https://factorvictoria.com",
     "https://www.factorvictoria.com",
     "http://localhost:5173",
   ]);
   const origin = req.headers.origin;
-  res.setHeader("Access-Control-Allow-Origin", allow.has(origin) ? origin : "https://factorvictoria.com");
+  if (allow.has(origin)) res.setHeader("Access-Control-Allow-Origin", origin);
+  else res.setHeader("Access-Control-Allow-Origin", "https://factorvictoria.com");
+
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-token");
+
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
@@ -54,10 +49,9 @@ module.exports = async (req, res) => {
       });
     }
 
-    const url = new URL(`https://${host}/odds`);
-    url.searchParams.set("fixture", String(fixture));
+    const url = `https://${host}/odds?fixture=${encodeURIComponent(String(fixture))}&timezone=America/Santiago`;
 
-    const r = await fetch(url.toString(), {
+    const r = await fetch(url, {
       headers: {
         "x-apisports-key": key,
         "x-rapidapi-host": host,
@@ -81,56 +75,68 @@ module.exports = async (req, res) => {
     }
 
     const item = response[0];
-    const bm = pickBestBookmaker(item);
-
+    const bm = pickFirstBookmaker(item);
     if (!bm) {
       return res.status(200).json({
         found: true,
         markets: {},
-        note: "No bookmakers available for this fixture in API-SPORTS response.",
+        note: "Odds found but no bookmakers in response.",
         raw: data,
       });
     }
 
-    const m1x2 = getBet(bm, "Match Winner");
-    const mdc = getBet(bm, "Double Chance");
-    const mou = getBet(bm, "Goals Over/Under");
-    const mbtts = getBet(bm, "Both Teams Score");
-
+    // Normalización MVP
     const markets = {
+      "1X2": {
+        home: null,
+        draw: null,
+        away: null,
+      },
+      DC: {
+        home_draw: null,
+        home_away: null,
+        draw_away: null,
+      },
+      OU_25: {
+        over: null,
+        under: null,
+      },
+      BTTS: {
+        yes: null,
+        no: null,
+      },
       meta: {
         bookmaker: bm?.name || null,
-        fixture: String(fixture),
       },
-      "1X2": m1x2
-        ? {
-            home: valOdd(m1x2, "Home"),
-            draw: valOdd(m1x2, "Draw"),
-            away: valOdd(m1x2, "Away"),
-          }
-        : null,
-      DC: mdc
-        ? {
-            home_draw: valOdd(mdc, "Home/Draw"),
-            home_away: valOdd(mdc, "Home/Away"),
-            draw_away: valOdd(mdc, "Draw/Away"),
-          }
-        : null,
-      OU_25: mou
-        ? {
-            over: valOdd(mou, "Over 2.5"),
-            under: valOdd(mou, "Under 2.5"),
-          }
-        : null,
-      BTTS: mbtts
-        ? {
-            yes: valOdd(mbtts, "Yes"),
-            no: valOdd(mbtts, "No"),
-          }
-        : null,
     };
 
-    // Limpieza: si todo viene null, lo marcamos “insuficiente”
+    const m1x2 = marketByName(bm, "Match Winner");
+    if (m1x2) {
+      markets["1X2"].home = valueOdd(m1x2, "Home");
+      markets["1X2"].draw = valueOdd(m1x2, "Draw");
+      markets["1X2"].away = valueOdd(m1x2, "Away");
+    }
+
+    const mdc = marketByName(bm, "Double Chance");
+    if (mdc) {
+      markets.DC.home_draw = valueOdd(mdc, "Home/Draw");
+      markets.DC.home_away = valueOdd(mdc, "Home/Away");
+      markets.DC.draw_away = valueOdd(mdc, "Draw/Away");
+    }
+
+    const mou = marketByName(bm, "Goals Over/Under");
+    if (mou) {
+      // nos enfocamos solo en 2.5
+      markets.OU_25.over = valueOdd(mou, "Over 2.5");
+      markets.OU_25.under = valueOdd(mou, "Under 2.5");
+    }
+
+    const mbtts = marketByName(bm, "Both Teams Score");
+    if (mbtts) {
+      markets.BTTS.yes = valueOdd(mbtts, "Yes");
+      markets.BTTS.no = valueOdd(mbtts, "No");
+    }
+
     const hasAny =
       (markets["1X2"] && (markets["1X2"].home || markets["1X2"].draw || markets["1X2"].away)) ||
       (markets.DC && (markets.DC.home_draw || markets.DC.home_away || markets.DC.draw_away)) ||
@@ -141,7 +147,7 @@ module.exports = async (req, res) => {
       found: true,
       markets: hasAny ? markets : {},
       note: hasAny ? undefined : "Odds found but MVP markets missing (try another fixture).",
-      raw: data, // déjalo por ahora para debug
+      raw: data,
     });
   } catch (err) {
     return res.status(200).json({

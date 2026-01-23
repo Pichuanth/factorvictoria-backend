@@ -80,6 +80,9 @@ module.exports = async (req, res) => {
       const url = new URL(`https://${host}/fixtures`);
       url.searchParams.set("date", dateStr);
       if (country) url.searchParams.set("country", String(country));
+      url.searchParams.set("date", dateStr);
+      url.searchParams.set("timezone", "America/Santiago"); // ✅ clave
+
 
       const r = await fetch(url.toString(), {
         headers: {
