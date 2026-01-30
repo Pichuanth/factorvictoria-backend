@@ -13,6 +13,18 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:5173",
 ];
 
+const corsOptions = {
+  origin: function (origin, cb) {
+    // permite requests sin origin (Postman / server-to-server)
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS: " + origin));
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
+  credentials: false,
+};
+
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -31,10 +43,18 @@ app.use(
   })
 );
 
-// 🔑 MUY IMPORTANTE PARA EL PREFLIGHT (OPTIONS)
-app.options("*", cors());
+// ✅ ESTE es el middleware correcto (con tus options)
+app.use(cors(corsOptions));
 
+// 🔑 MUY IMPORTANTE PARA EL PREFLIGHT (OPTIONS)
+app.options("*", cors(corsOptions));
+
+// (3) JSON después de CORS
 app.use(express.json());
+app.use("/api", oddsRouter);
+
+// (4) RUTAS: asegúrate que el router esté definido ANTES de usarlo
+const oddsRouter = require("./routes/odds");
 app.use("/api", oddsRouter);
 
 // ---------- DB (opcional) ----------
