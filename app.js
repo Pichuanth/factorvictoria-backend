@@ -2,11 +2,11 @@
 const express = require("express");
 const cors = require("cors");
 const pg = require("pg");
-
 const { Pool } = pg;
+
 const app = express();
 
-/* ========= CORS (SOLO UNA VEZ) ========= */
+/* ========= CORS ========= */
 const ALLOWED_ORIGINS = [
   "https://factorvictoria.com",
   "https://www.factorvictoria.com",
@@ -16,7 +16,7 @@ const ALLOWED_ORIGINS = [
 
 const corsOptions = {
   origin: (origin, cb) => {
-    if (!origin) return cb(null, true); // Postman / server-to-server
+    if (!origin) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS: " + origin));
   },
@@ -25,13 +25,17 @@ const corsOptions = {
   credentials: false,
 };
 
+// ✅ CORS en TODAS las requests
+app.use(cors(corsOptions));
+// ✅ Preflight
 app.options("*", cors(corsOptions));
 
-/* ========= BODY JSON ========= */
+/* ========= BODY ========= */
 app.use(express.json());
 
-/* ========= ROUTERS (primero require, después use) ========= */
+/* ========= ROUTES ========= */
 const oddsRouter = require("./routes/odds");
+app.use("/api", oddsRouter);
 
 /* ========= DB (opcional) ========= */
 const pool = process.env.DATABASE_URL
