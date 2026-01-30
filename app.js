@@ -6,6 +6,7 @@ const pg = require("pg");
 const { Pool } = pg;
 const app = express();
 
+/* ========= CORS (SOLO UNA VEZ) ========= */
 const ALLOWED_ORIGINS = [
   "https://factorvictoria.com",
   "https://www.factorvictoria.com",
@@ -14,9 +15,8 @@ const ALLOWED_ORIGINS = [
 ];
 
 const corsOptions = {
-  origin: function (origin, cb) {
-    // permite requests sin origin (Postman / server-to-server)
-    if (!origin) return cb(null, true);
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // Postman / server-to-server
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS: " + origin));
   },
@@ -25,39 +25,15 @@ const corsOptions = {
   credentials: false,
 };
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Permite requests sin origin (Postman / server-to-server)
-      if (!origin) return callback(null, true);
-
-      if (ALLOWED_ORIGINS.includes(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error("Not allowed by CORS: " + origin));
-    },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
-    credentials: false,
-  })
-);
-
-// ✅ ESTE es el middleware correcto (con tus options)
-app.use(cors(corsOptions));
-
-// 🔑 MUY IMPORTANTE PARA EL PREFLIGHT (OPTIONS)
 app.options("*", cors(corsOptions));
 
-// (3) JSON después de CORS
+/* ========= BODY JSON ========= */
 app.use(express.json());
-app.use("/api", oddsRouter);
 
-// (4) RUTAS: asegúrate que el router esté definido ANTES de usarlo
+/* ========= ROUTERS (primero require, después use) ========= */
 const oddsRouter = require("./routes/odds");
-app.use("/api", oddsRouter);
 
-// ---------- DB (opcional) ----------
+/* ========= DB (opcional) ========= */
 const pool = process.env.DATABASE_URL
   ? new Pool({
       connectionString: process.env.DATABASE_URL,
