@@ -6,10 +6,34 @@ const pg = require("pg");
 const { Pool } = pg;
 const app = express();
 
-app.use(cors());
+const ALLOWED_ORIGINS = [
+  "https://factorvictoria.com",
+  "https://www.factorvictoria.com",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Permite requests sin origin (Postman, server-to-server)
+      if (!origin) return callback(null, true);
+
+      if (ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS: " + origin));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
+  })
+);
+
+// 🔑 MUY IMPORTANTE PARA EL PREFLIGHT (OPTIONS)
+app.options("*", cors());
+
 app.use(express.json());
-const oddsRouter = require("./routes/odds");
-app.use("/api", oddsRouter);
 
 // ---------- DB (opcional) ----------
 const pool = process.env.DATABASE_URL
