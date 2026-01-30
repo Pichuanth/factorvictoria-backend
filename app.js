@@ -16,7 +16,7 @@ const ALLOWED_ORIGINS = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Permite requests sin origin (Postman, server-to-server)
+      // Permite requests sin origin (Postman / server-to-server)
       if (!origin) return callback(null, true);
 
       if (ALLOWED_ORIGINS.includes(origin)) {
@@ -27,6 +27,7 @@ app.use(
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
+    credentials: false,
   })
 );
 
@@ -34,6 +35,7 @@ app.use(
 app.options("*", cors());
 
 app.use(express.json());
+app.use("/api", oddsRouter);
 
 // ---------- DB (opcional) ----------
 const pool = process.env.DATABASE_URL
