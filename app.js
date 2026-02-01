@@ -3,6 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const pg = require("pg");
 const { Pool } = pg;
+const fvpackRouter = require("./routes/fvpack");
+app.use("/api", fvpackRouter);
 
 const app = express();
 
