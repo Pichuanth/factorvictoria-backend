@@ -1,14 +1,13 @@
 // app.js (CommonJS)
 const express = require("express");
 const cors = require("cors");
-const pg = require("pg");
-const { Pool } = pg;
-const fvpackRouter = require("./routes/fvpack");
-app.use("/api", fvpackRouter);
 
-const app = express();
+const app = express(); // ✅ primero creas app
 
-/* ========= CORS ========= */
+// middlewares
+app.use(express.json());
+
+// CORS (tu configuración)
 const ALLOWED_ORIGINS = [
   "https://factorvictoria.com",
   "https://www.factorvictoria.com",
@@ -16,16 +15,19 @@ const ALLOWED_ORIGINS = [
   "http://127.0.0.1:5173",
 ];
 
-const corsOptions = {
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error("Not allowed by CORS: " + origin));
-  },
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
-  credentials: false,
-};
+app.use(
+  cors({
+    origin: function (origin, cb) {
+      if (!origin) return cb(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+  })
+);
+// ✅ recién aquí montas routers
+const fvpackRouter = require("./routes/fvpack");
+app.use("/api", fvpackRouter);
 
 // ✅ CORS en TODAS las requests
 app.use(cors(corsOptions));
