@@ -1,18 +1,14 @@
-// app.js (CommonJS)
 const express = require("express");
 const cors = require("cors");
 
-const app = express(); // ✅ primero creas app
+const oddsRouter = require("./routes/odds");
+const fvpackRouter = require("./routes/fvpack");
+
+const app = express();
 
 // middlewares
-app.use(cors(/* corsOptions */));
 app.use(express.json());
 
-// ✅ routes recién aquí montas routers
-const fvpackRouter = require("./routes/fvpack");
-app.use("/api", fvpackRouter);
-
-// CORS (tu configuración)
 const ALLOWED_ORIGINS = [
   "https://factorvictoria.com",
   "https://www.factorvictoria.com",
@@ -30,6 +26,15 @@ app.use(
     credentials: true,
   })
 );
+
+// routes
+app.use("/api", oddsRouter);
+app.use("/api", fvpackRouter);
+
+// health
+app.get("/api/health", (req, res) => res.json({ ok: true }));
+
+module.exports = app;
 
 // ✅ CORS en TODAS las requests
 app.use(cors(corsOptions));
