@@ -5,7 +5,12 @@ const cors = require("cors");
 const app = express(); // ✅ primero creas app
 
 // middlewares
+app.use(cors(/* corsOptions */));
 app.use(express.json());
+
+// ✅ routes recién aquí montas routers
+const fvpackRouter = require("./routes/fvpack");
+app.use("/api", fvpackRouter);
 
 // CORS (tu configuración)
 const ALLOWED_ORIGINS = [
@@ -25,9 +30,6 @@ app.use(
     credentials: true,
   })
 );
-// ✅ recién aquí montas routers
-const fvpackRouter = require("./routes/fvpack");
-app.use("/api", fvpackRouter);
 
 // ✅ CORS en TODAS las requests
 app.use(cors(corsOptions));
@@ -36,10 +38,6 @@ app.options("*", cors(corsOptions));
 
 /* ========= BODY ========= */
 app.use(express.json());
-
-/* ========= ROUTES ========= */
-const oddsRouter = require("./routes/odds");
-app.use("/api", oddsRouter);
 
 /* ========= DB (opcional) ========= */
 const pool = process.env.DATABASE_URL
