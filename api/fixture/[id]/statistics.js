@@ -1,7 +1,8 @@
 // backend/api/fixture/[id]/statistics.js
 module.exports = async (req, res) => {
   try {
-    const id = req?.query?.id; // ← Vercel dynamic param
+    const id = req?.query?.id ?? req?.query?.fixtureId ?? req?.params?.id;
+
     if (!process.env.APISPORTS_KEY) {
       return res.status(400).json({ error: "missing_APISPORTS_KEY" });
     }
