@@ -1,16 +1,11 @@
 // backend/api/fixture/[id]/fvpack.js
-module.exports = async (req, res) => {
-  // ---- CORS ----
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+const cors = require("../../_cors");
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
+module.exports = async (req, res) => {
+  if (cors(req, res)) return;
 
   try {
-    const fixtureId = Number(req?.query?.id || req?.params?.id || req?.query?.fixtureId);
+    const fixtureId = Number(req?.query?.id || req?.params?.id);
 
     return res.status(200).json({
       fixtureId: Number.isFinite(fixtureId) ? fixtureId : null,
@@ -20,6 +15,6 @@ module.exports = async (req, res) => {
       markets: {},
     });
   } catch (e) {
-    return res.status(200).json({ error: String(e?.message || e) });
+    return res.status(500).json({ error: "server_error", message: String(e?.message || e) });
   }
 };

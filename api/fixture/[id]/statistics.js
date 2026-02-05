@@ -1,17 +1,11 @@
 // backend/api/fixture/[id]/statistics.js
-module.exports = async (req, res) => {
-  // ---- CORS ----
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+const cors = require("../../_cors");
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
+module.exports = async (req, res) => {
+  if (cors(req, res)) return;
 
   try {
-    const id = req?.query?.id || req?.params?.id || req?.query?.fixtureId;
-
+    const id = req?.query?.id || req?.params?.id;
     if (!process.env.APISPORTS_KEY) {
       return res.status(400).json({ error: "missing_APISPORTS_KEY" });
     }

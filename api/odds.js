@@ -53,9 +53,8 @@ module.exports = async (req, res) => {
 
     const r = await fetch(url, {
       headers: {
-        "x-apisports-key": key,
-        "x-rapidapi-host": host,
-      },
+       "x-apisports-key": key,
+     }
     });
 
     const data = await r.json().catch(() => null);
