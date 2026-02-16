@@ -23,6 +23,9 @@ function addDaysYYYYMMDD(dateStr, days) {
   return `${yy}-${mm}-${dd}`;
 }
 
+
+const MAX_DAYS = 14; // API-FOOTBALL limit por request (días)
+
 module.exports = async (req, res) => {
   // ---- CORS (allowlist) ----
   const allow = new Set([
@@ -67,8 +70,9 @@ module.exports = async (req, res) => {
 
       const dayMs = 24 * 60 * 60 * 1000;
       days = Math.floor((b - a) / dayMs) + 1;
-      if (days > 14) {
-        return res.status(400).json({ error: "Range too large. Use max 14 days per request." });
+      if (days > MAX_DAYS) {
+        // En vez de fallar, recortamos el rango para evitar pantalla en blanco en frontend
+        days = MAX_DAYS;
       }
     }
 
