@@ -68,7 +68,7 @@ module.exports = async (req, res) => {
       const dayMs = 24 * 60 * 60 * 1000;
       days = Math.floor((b - a) / dayMs) + 1;
       if (days > 14) {
-        return res.status(400).json({ error: "Range too large. Use max 14 days per request." });
+        return res.status(400).json({ error: "Range too large. Use max 31 days per request." });
       }
     }
 
