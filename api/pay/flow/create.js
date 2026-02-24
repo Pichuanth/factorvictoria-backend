@@ -17,6 +17,12 @@ module.exports = async (req, res) => {
     if (!email) return res.status(400).json({ error: "email requerido" });
 
     const plan = plans[planId];
+
+    // === Test mode (para pruebas sin cobrar monto real) ===
+    const testMode = String(process.env.FLOW_TEST_MODE || "").toLowerCase() === "true";
+    const testAmount = Number(process.env.FLOW_TEST_AMOUNT_CLP || 1000);
+    const amount = testMode ? testAmount : plan.amount;
+
     const BACKEND_URL = process.env.BACKEND_URL;
     const FRONTEND_URL = process.env.FRONTEND_URL;
     if (!BACKEND_URL || !FRONTEND_URL) return res.status(500).json({ error: "BACKEND_URL/FRONTEND_URL missing" });
@@ -37,7 +43,7 @@ module.exports = async (req, res) => {
       commerceOrder,
       subject: `FactorVictoria - ${planId}`,
       currency: "CLP",
-      amount: plan.amount,
+      amount: amount,
       email,
       urlConfirmation,
       urlReturn,
@@ -60,6 +66,8 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({
       ok: true,
+      amount,
+      testMode,
       planId,
       commerceOrder,
       flowOrder: data.flowOrder || null,
