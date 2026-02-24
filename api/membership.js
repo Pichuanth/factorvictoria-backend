@@ -6,7 +6,8 @@ const qs = require("querystring");
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
-
+  
+return res.status(200).json({ ok: true, marker: "membership_v3" });
   try {
     // 1) Primer intento: req.query (Vercel Node)
     let email = (req.query && req.query.email) || null;
