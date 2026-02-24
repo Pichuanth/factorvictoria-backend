@@ -9,19 +9,13 @@ module.exports = async (req, res) => {
 
   try {
     // Soporta varios formatos de request (Vercel Node, Express, etc.)
-    let email =
-      (req.query && req.query.email) ||
-      (req.nextUrl && req.nextUrl.searchParams && req.nextUrl.searchParams.get("email")) ||
-      null;
+    let email = (req.query && req.query.email) || null;
 
-    if (!email) {
-      // fallback: parse desde req.url si existe
-      const rawUrl = req.url || "";
-      if (rawUrl.includes("?")) {
-        const url = new URL(rawUrl, "https://dummy.local");
-        email = url.searchParams.get("email");
-      }
-    }
+if (!email) {
+  const rawUrl = req.url || "";
+  const url = new URL(rawUrl, "https://dummy.local");
+  email = url.searchParams.get("email");
+}
 
     if (!email) return res.status(400).json({ error: "email requerido" });
 
