@@ -1,5 +1,4 @@
-import cors from "../_cors.js";
-
+const cors = require("../_cors");
 /**
  * /api/referees/cards
  * Ranking simple de árbitros con más tarjetas en un rango de fechas (y opcional country).
@@ -38,7 +37,7 @@ async function poolMap(items, worker, concurrency = 5) {
   return out;
 }
 
-export default async function handler(req, res) {
+module.exports = async (req, res) {
   await cors(req, res);
 
   const KEY = process.env.APISPORTS_KEY;

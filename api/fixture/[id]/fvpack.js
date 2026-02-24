@@ -1,5 +1,4 @@
-import cors from "../../_cors.js";
-
+const cors = require("../../_cors");
 /**
  * /api/fixture/:id/fvpack
  * Devuelve un "pack" rápido para el panel de estadísticas del Comparator:
@@ -86,7 +85,7 @@ function estimateLambdas(homeForm, awayForm) {
   return { lambdaHome, lambdaAway, lambdaTotal };
 }
 
-export default async function handler(req, res) {
+module.exports = async (req, res) {
   await cors(req, res);
 
   const fixtureId = req.query?.id;
