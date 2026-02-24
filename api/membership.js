@@ -1,4 +1,3 @@
-// backend/api/membership.js
 const cors = require("./_cors");
 const db = require("./_db");
 
@@ -8,14 +7,14 @@ module.exports = async (req, res) => {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    // Soporta varios formatos de request (Vercel Node, Express, etc.)
+    // NO usamos req.nextUrl NUNCA (en Vercel Node serverless suele dar problemas)
     let email = (req.query && req.query.email) || null;
 
-if (!email) {
-  const rawUrl = req.url || "";
-  const url = new URL(rawUrl, "https://dummy.local");
-  email = url.searchParams.get("email");
-}
+    if (!email) {
+      const rawUrl = req.url || "";
+      const url = new URL(rawUrl, "https://dummy.local");
+      email = url.searchParams.get("email");
+    }
 
     if (!email) return res.status(400).json({ error: "email requerido" });
 
