@@ -5,17 +5,31 @@ const db = require("./_db");
 // GET /api/membership?email=...
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const email = req.query?.email;
+    // Soporta varios formatos de request (Vercel Node, Express, etc.)
+    let email =
+      (req.query && req.query.email) ||
+      (req.nextUrl && req.nextUrl.searchParams && req.nextUrl.searchParams.get("email")) ||
+      null;
+
+    if (!email) {
+      // fallback: parse desde req.url si existe
+      const rawUrl = req.url || "";
+      if (rawUrl.includes("?")) {
+        const url = new URL(rawUrl, "https://dummy.local");
+        email = url.searchParams.get("email");
+      }
+    }
+
     if (!email) return res.status(400).json({ error: "email requerido" });
 
     const r = await db.query(
       "select email, plan_id, tier, status, start_at, end_at from memberships where email = $1 limit 1",
       [email]
     );
+
     const m = r.rows?.[0] || null;
     const active = !!(m && m.status === "active" && (!m.end_at || new Date(m.end_at) > new Date()));
 
