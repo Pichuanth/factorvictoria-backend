@@ -1,3 +1,4 @@
+throw new Error("MEMBERSHIP_VERSION_99");
 const cors = require("./_cors");
 const db = require("./_db");
 const qs = require("querystring");
