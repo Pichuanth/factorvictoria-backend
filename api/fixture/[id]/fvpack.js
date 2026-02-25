@@ -85,10 +85,12 @@ function estimateLambdas(homeForm, awayForm) {
   return { lambdaHome, lambdaAway, lambdaTotal };
 }
 
-module.exports = async (req, res) {
+module.exports = async (req, res) => {
   await cors(req, res);
 
-  const fixtureId = req.query?.id;
+
+  try {
+  const fixtureId = req.query?.fixtureId || req.query?.id;
   if (!fixtureId) return res.status(400).json({ ok: false, error: "Missing fixture id" });
 
   const KEY = process.env.APISPORTS_KEY;
@@ -161,4 +163,8 @@ module.exports = async (req, res) {
     last5,
     meta: { homeId, awayId },
   });
+  } catch (err) {
+    console.error('[fvpack] error', err);
+    return res.status(500).json({ ok: false, error: 'FVPACK_FAILED' });
+  }
 }
