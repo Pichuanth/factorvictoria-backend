@@ -73,7 +73,8 @@ module.exports = async (req, res) => {
     if (!planId || !plans[planId] || !email) return;
 
     const now = new Date();
-    const end = new Date(now.getTime() + plans[planId].days * 24 * 60 * 60 * 1000);
+    const planDays = plans[planId].days;
+    const end = (planDays == null) ? null : new Date(now.getTime() + planDays * 24 * 60 * 60 * 1000);
 
     // 3) Activar membresía
     try {
@@ -87,7 +88,7 @@ module.exports = async (req, res) => {
            status = 'active',
            start_at = excluded.start_at,
            end_at = excluded.end_at`,
-        [email, userId, planId, plans[planId].tier, now.toISOString(), end.toISOString()]
+        [email, userId, planId, plans[planId].tier, now.toISOString(), end ? end.toISOString() : null]
       );
 
       await db.query(

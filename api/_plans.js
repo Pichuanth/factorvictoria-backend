@@ -1,35 +1,33 @@
 // Central plan catalog used by backend payment + membership.
-// planId values must match what the frontend sends (App.jsx /checkout?plan=...).
+// planId values must match what the frontend sends.
 
 module.exports = {
   mensual: {
-    label: "Mensual",
+    label: "Inicio (Mensual)",
     amount: 19990,
     currency: "CLP",
     days: 30,
-    tier: "basic",
+    tier: "basic", // x10
   },
   trimestral: {
-    label: "Trimestral (+1 mes regalo)",
+    label: "Goleador (4 meses)",
     amount: 44990,
     currency: "CLP",
-    // 3 meses + 1 de regalo => 4 meses aprox
-    days: 120,
-    tier: "pro",
+    days: 120, // 4 meses
+    tier: "goleador", // x20
   },
   anual: {
-    label: "Anual",
+    label: "Campeón (Anual)",
     amount: 99990,
     currency: "CLP",
     days: 365,
-    tier: "pro",
+    tier: "campeon", // x50
   },
   vitalicio: {
-    label: "Vitalicio",
+    label: "Leyenda (Vitalicio)",
     amount: 249990,
     currency: "CLP",
-    // Lifetime: store a long end date to simplify gating
-    days: 36500,
-    tier: "pro",
+    days: null,      // vitalicio real => end_at NULL
+    tier: "leyenda", // x100
   },
 };
