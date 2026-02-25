@@ -11,7 +11,8 @@ let _pool;
  * - Lanza error claro si la URL no es parseable.
  */
 function _diagnoseDatabaseUrl(raw) {
-  const s = String(raw ?? "");
+  // Normaliza a string y elimina comillas envolventes si existieran.
+  let s = String(raw ?? "");
   const meta = {
     present: Boolean(raw),
     length: s.length,
@@ -33,42 +34,48 @@ function _diagnoseDatabaseUrl(raw) {
     },
   };
 
-  // Normaliza comillas externas comunes (por si alguien pegó con comillas).
+  // Candidate "limpio"
   let candidate = s.trim();
-  if ((candidate.startsWith('"') && candidate.endsWith('"')) || (candidate.startsWith("'") && candidate.endsWith("'"))) {
+  if (
+    (candidate.startsWith('"') && candidate.endsWith('"')) ||
+    (candidate.startsWith("'") && candidate.endsWith("'"))
+  ) {
     candidate = candidate.slice(1, -1);
   }
 
-  // Valida formato URL (postgres:// o postgresql://)
-  let url;
-  try {
-    url = new URL(candidate);
-  } catch (e) {
+  // Validación mínima (NO usamos new URL(), porque puede fallar con passwords no-encoded
+  // aunque el driver 'pg' sí pueda conectar).
+  if (!/^postgres(ql)?:\/\//i.test(candidate)) {
     console.log("[db] DATABASE_URL check:", meta);
     throw new Error(
-      "DATABASE_URL inválida (no parseable por URL). Revisa formato y caracteres (comillas/espacios/saltos de línea). Diagnóstico: " +
-        JSON.stringify({
-          present: meta.present,
-          length: meta.length,
-          hasLeadingOrTrailingWhitespace: meta.hasLeadingOrTrailingWhitespace,
-          startsWithQuote: meta.startsWithQuote,
-          endsWithQuote: meta.endsWithQuote,
-          hasNewline: meta.hasNewline,
-          protocol: meta.protocol,
-          safePreview: meta.safePreview,
-          rawFingerprint: meta.rawFingerprint,
-        })
+      "DATABASE_URL inválida: debe comenzar con postgres:// o postgresql://"
     );
   }
 
-  meta.protocol = url.protocol; // p.ej. 'postgres:' o 'postgresql:'
+  // Protocol para diagnóstico
+  meta.protocol = candidate.split("://")[0] + "://";
 
-  // Safe preview sin password (mask user).
-  const safeUser = url.username ? "***" : "";
-  const hasAuth = Boolean(url.username) || Boolean(url.password);
-  meta.safePreview = `${url.protocol}//${hasAuth ? safeUser + "@" : ""}${url.host}${url.pathname}`;
+  // Safe preview sin exponer password (parse manual tolerante)
+  try {
+    const schemeSep = candidate.indexOf("://");
+    const scheme = candidate.slice(0, schemeSep);
+    const rest = candidate.slice(schemeSep + 3); // after ://
+    const at = rest.lastIndexOf("@");
+    if (at !== -1) {
+      const auth = rest.slice(0, at);
+      const hostPath = rest.slice(at + 1);
+      const user = auth.split(":")[0] || "";
+      meta.safePreview = `${scheme}://${user ? "***" : ""}${user ? "@" : ""}${hostPath}`;
+    } else {
+      meta.safePreview = `${scheme}://${rest}`;
+    }
+  } catch {
+    meta.safePreview = null;
+  }
 
+  // Log mínimo (sin credenciales). Visible en Vercel Functions logs.
   console.log("[db] DATABASE_URL check:", meta);
+
   return candidate;
 }
 
