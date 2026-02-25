@@ -6,7 +6,7 @@ const qs = require("querystring");
 
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-  if (req.method !== "POST") return res.status(405).send("Method not allowed");
+  if (req.method !== "POST" && req.method !== "GET") return res.status(405).send("Method not allowed");
 
   try {
     // --- Leer body aunque venga como x-www-form-urlencoded y Vercel no lo parsee ---
