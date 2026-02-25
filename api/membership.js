@@ -9,6 +9,27 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: "Method not allowed" });
 
   try {
+
+  // DEBUG marker (no toca DB). Actívalo con ?marker=1
+  const rawUrlForMarker = req.url || "";
+  const markerIdx = rawUrlForMarker.indexOf("?");
+  const markerQs = markerIdx >= 0 ? rawUrlForMarker.slice(markerIdx + 1) : "";
+  const markerParsed = qs.parse(markerQs);
+  const markerOn =
+    (req.query && String(req.query.marker || "") === "1") ||
+    (markerParsed && String(markerParsed.marker || "") === "1");
+
+  if (markerOn) {
+    return res.status(200).json({
+      ok: true,
+      marker: "membership-v1-2026-02-25",
+      hasNextUrl: Boolean(req && req.nextUrl),
+      url: req.url || null,
+      method: req.method,
+      query: req.query ?? null,
+    });
+  }
+
     // 1) Vercel/Express style
     let email = (req.query && req.query.email) ? String(req.query.email) : null;
 
