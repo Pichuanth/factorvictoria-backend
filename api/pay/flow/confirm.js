@@ -1,3 +1,4 @@
+return res.status(200).json({ ok: true, marker: "membership_live_20260224" });
 const cors = require("../../_cors");
 const db = require("../../_db");
 const plans = require("../../_plans");
