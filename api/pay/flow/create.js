@@ -28,7 +28,7 @@ module.exports = async (req, res) => {
     if (!BACKEND_URL || !FRONTEND_URL) return res.status(500).json({ error: "BACKEND_URL/FRONTEND_URL missing" });
 
     // commerceOrder único
-    const commerceOrder = `FV-${planId}-${Date.now()}`;
+    const commerceOrder = `FV|${planId}|${email}|${Date.now()}`
 
     const optional = JSON.stringify({
       planId,

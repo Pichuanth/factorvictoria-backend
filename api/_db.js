@@ -82,10 +82,11 @@ function _diagnoseDatabaseUrl(raw) {
 function getPool() {
   if (!_pool) {
     const raw =
-      process.env.DATABASE_URL ||
-      process.env.POSTGRES_URL ||
-      process.env.POSTGRES_PRISMA_URL ||
-      process.env.POSTGRES_URL_NON_POOLING;
+  process.env.NEON_URL_NON_POOLING ||
+  process.env.NEON_URL ||
+  process.env.POSTGRES_URL_NON_POOLING ||
+  process.env.POSTGRES_URL ||
+  process.env.DATABASE_URL;
 
     if (!raw) throw new Error("DATABASE_URL missing");
 

@@ -1,8 +1,35 @@
-// backend/api/_plans.js
-// Define tus planes aquí (monto en CLP, duración en días y "tier" para PDFs).
+// Central plan catalog used by backend payment + membership.
+// planId values must match what the frontend sends (App.jsx /checkout?plan=...).
+
 module.exports = {
-  monthly: { amount: 19990, days: 30, tier: "pro" },
-  quarterly: { amount: 44990, days: 90, tier: "pro" },
-  annual: { amount: 99990, days: 365, tier: "pro" },
-  lifetime: { amount: 249990, days: 3650, tier: "lifetime" }, // opcional
+  mensual: {
+    label: "Mensual",
+    amount: 19990,
+    currency: "CLP",
+    days: 30,
+    tier: "basic",
+  },
+  trimestral: {
+    label: "Trimestral (+1 mes regalo)",
+    amount: 44990,
+    currency: "CLP",
+    // 3 meses + 1 de regalo => 4 meses aprox
+    days: 120,
+    tier: "pro",
+  },
+  anual: {
+    label: "Anual",
+    amount: 99990,
+    currency: "CLP",
+    days: 365,
+    tier: "pro",
+  },
+  vitalicio: {
+    label: "Vitalicio",
+    amount: 249990,
+    currency: "CLP",
+    // Lifetime: store a long end date to simplify gating
+    days: 36500,
+    tier: "pro",
+  },
 };
