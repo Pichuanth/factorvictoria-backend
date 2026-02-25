@@ -1,27 +1,45 @@
-// backend/api/pay/flow/confirm.js
 const cors = require("../../_cors");
 const db = require("../../_db");
 const plans = require("../../_plans");
 const { flowPost } = require("./_flow");
+const qs = require("querystring");
 
-// Flow confirmará vía POST x-www-form-urlencoded con token=XXXX
-// POST /api/pay/flow/confirm
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-
   if (req.method !== "POST") return res.status(405).send("Method not allowed");
 
-  // Responder rápido a Flow
-  res.status(200).send("OK");
-
   try {
-    const token = req.body?.token || req.query?.token;
+    // --- Leer body aunque venga como x-www-form-urlencoded y Vercel no lo parsee ---
+    let token = req.body?.token || req.query?.token;
+
+    // si req.body viene como string o buffer
+    if (!token && (typeof req.body === "string" || Buffer.isBuffer(req.body))) {
+      const parsed = qs.parse(req.body.toString());
+      token = parsed.token;
+    }
+
+    // si req.body viene vacío, leer el stream manualmente
+    if (!token) {
+      const raw = await new Promise((resolve) => {
+        let data = "";
+        req.on("data", (chunk) => (data += chunk));
+        req.on("end", () => resolve(data));
+        req.on("error", () => resolve(""));
+      });
+      if (raw) {
+        const parsed = qs.parse(raw);
+        token = parsed.token;
+      }
+    }
+
+    // Responder rápido a Flow
+    res.status(200).send("OK");
+
     if (!token) return;
 
     // 1) Consultar estado en Flow
     const statusData = await flowPost("/payment/getStatus", { token });
 
-    // Según docs Flow: status 2 = pagado (confirmado)
     const status = Number(statusData?.status);
     const commerceOrder = statusData?.commerceOrder;
     const flowOrder = statusData?.flowOrder || null;
@@ -78,7 +96,8 @@ module.exports = async (req, res) => {
       );
     } catch (e) {}
   } catch (err) {
-    // No podemos responder porque ya respondimos OK. Log silencioso.
+    // Ojo: si falló antes de responder, intenta responder
+    try { res.status(200).send("OK"); } catch (_) {}
     console.error("flow confirm error:", err);
   }
 };
