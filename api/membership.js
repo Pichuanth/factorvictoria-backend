@@ -20,7 +20,7 @@ module.exports = async (req, res) => {
     if (markerOn) {
       return res.status(200).json({
         ok: true,
-        marker: "membership-v2-2026-02-25",
+        marker: "membership-v3-2026-02-26",
         url: req.url || null,
         method: req.method,
         query: req.query ?? null,
@@ -43,7 +43,7 @@ module.exports = async (req, res) => {
       const upd = await db.query(
         `update memberships
          set cancel_at_period_end = true
-         where email = $1
+         where lower(email) = $1
          returning email, plan_id, tier, status, start_at, end_at, cancel_at_period_end`,
         [email]
       );
@@ -53,8 +53,9 @@ module.exports = async (req, res) => {
     }
 
     // --- GET ---
-    if (req.method !== "GET")
+    if (req.method !== "GET") {
       return res.status(405).json({ error: "Method not allowed" });
+    }
 
     let email = (req.query && req.query.email) ? String(req.query.email) : null;
 
@@ -68,8 +69,10 @@ module.exports = async (req, res) => {
 
     if (!email) return res.status(400).json({ error: "email requerido" });
 
+    email = String(email).trim().toLowerCase();
+
     const r = await db.query(
-      "select email, plan_id, tier, status, start_at, end_at, cancel_at_period_end from memberships where email = $1 limit 1",
+      "select email, plan_id, tier, status, start_at, end_at, cancel_at_period_end from memberships where lower(email) = $1 limit 1",
       [email]
     );
 
