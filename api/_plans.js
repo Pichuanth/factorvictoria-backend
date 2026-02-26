@@ -1,5 +1,5 @@
 // Central plan catalog used by backend payment + membership.
-// planId values must match what the frontend sends.
+// planId values must match what the frontend sends (e.g. /checkout?plan=mensual).
 
 module.exports = {
   mensual: {

@@ -27,16 +27,16 @@ function normalizeTier(rawTier) {
   return "basic";
 }
 
-function isMembershipActive(m) {
+function isActive(m) {
   return !!(m && m.status === "active" && (!m.end_at || new Date(m.end_at) > new Date()));
 }
 
 function allowedDocIdsByTier(tier) {
-  const out = [];
-  for (const [docId, meta] of Object.entries(DOCS)) {
-    if (meta.tiers.includes(tier)) out.push(docId);
-  }
   const order = ["guia-1","guia-2","guia-3","estrategia-core","estrategia-pro","estrategia-elite"];
+  const out = [];
+  for (const [id, meta] of Object.entries(DOCS)) {
+    if (meta.tiers.includes(tier)) out.push(id);
+  }
   out.sort((a,b)=>order.indexOf(a)-order.indexOf(b));
   return out;
 }
@@ -48,15 +48,15 @@ module.exports = async (req, res) => {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const { docId, email } = req.query || {};
+    const { email, docId } = req.query || {};
     if (!email) return res.status(400).json({ error: "email requerido" });
 
     const r = await db.query(
-      "select tier, status, end_at from memberships where email = $1 limit 1",
-      [email]
+      "select tier, status, end_at from memberships where lower(email) = $1 limit 1",
+      [String(email).trim().toLowerCase()]
     );
-    const m = r.rows?.[0];
-    if (!isMembershipActive(m)) return res.status(403).json({ error: "Membresía inactiva" });
+    const m = r.rows?.[0] || null;
+    if (!isActive(m)) return res.status(403).json({ error: "Membresía inactiva" });
 
     const tier = normalizeTier(m.tier);
 
