@@ -16,6 +16,9 @@ module.exports = async (req, res) => {
     if (!planId || !plans[planId]) return res.status(400).json({ error: "planId inválido" });
     if (!email) return res.status(400).json({ error: "email requerido" });
 
+    // Normaliza email para consistencia (login/memberships)
+    const emailNorm = String(email).trim().toLowerCase();
+
     const plan = plans[planId];
 
     // === Test mode (para pruebas sin cobrar monto real) ===
@@ -28,11 +31,11 @@ module.exports = async (req, res) => {
     if (!BACKEND_URL || !FRONTEND_URL) return res.status(500).json({ error: "BACKEND_URL/FRONTEND_URL missing" });
 
     // commerceOrder único
-    const commerceOrder = `FV|${planId}|${email}|${Date.now()}`
+    const commerceOrder = `FV|${planId}|${emailNorm}|${Date.now()}`;
 
     const optional = JSON.stringify({
       planId,
-      email,
+      email: emailNorm,
       userId: userId || null,
     });
 
@@ -44,7 +47,7 @@ module.exports = async (req, res) => {
       subject: `FactorVictoria - ${planId}`,
       currency: "CLP",
       amount: amount,
-      email,
+      email: emailNorm,
       urlConfirmation,
       urlReturn,
       optional,
@@ -56,7 +59,7 @@ module.exports = async (req, res) => {
         `insert into payment_intents (commerce_order, plan_id, email, user_id, flow_token, flow_order, status)
          values ($1,$2,$3,$4,$5,$6,$7)
          on conflict (commerce_order) do nothing`,
-        [commerceOrder, planId, email, userId || null, data.token || null, data.flowOrder || null, "created"]
+        [commerceOrder, planId, emailNorm, userId || null, data.token || null, data.flowOrder || null, "created"]
       );
     } catch (e) {
       // no romper si DB no está lista

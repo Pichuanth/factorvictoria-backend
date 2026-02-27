@@ -2,6 +2,18 @@ const cors = require("../../_cors");
 const db = require("../../_db");
 const plans = require("../../_plans");
 const { flowPost } = require("./_flow");
+
+function parseCommerceOrder(co) {
+  // Formato: FV|<planId>|<email>|<ts>
+  try {
+    const s = String(co || "");
+    const parts = s.split("|");
+    if (parts.length >= 3 && parts[0] === "FV") {
+      return { planId: parts[1] || null, email: parts[2] || null };
+    }
+  } catch (e) {}
+  return { planId: null, email: null };
+}
 const qs = require("querystring");
 
 module.exports = async (req, res) => {
@@ -66,15 +78,19 @@ module.exports = async (req, res) => {
       intent = r.rows?.[0];
     } catch (e) {}
 
-    const planId = intent?.plan_id;
-    const email = intent?.email || statusData?.payer || statusData?.email;
+    // Fallback: si por cualquier motivo no existe intent, intentamos derivar desde commerceOrder.
+    const parsed = parseCommerceOrder(commerceOrder);
+
+    const planId = intent?.plan_id || parsed.planId;
+    const emailRaw = intent?.email || parsed.email || statusData?.payer || statusData?.email;
+    const email = emailRaw ? String(emailRaw).trim().toLowerCase() : null;
     const userId = intent?.user_id || null;
 
     if (!planId || !plans[planId] || !email) return;
 
     const now = new Date();
-    const planDays = plans[planId].days;
-    const end = (planDays == null) ? null : new Date(now.getTime() + planDays * 24 * 60 * 60 * 1000);
+    const planDays = plans[planId]?.days;
+    const end = planDays == null ? null : new Date(now.getTime() + planDays * 24 * 60 * 60 * 1000);
 
     // 3) Activar membresía
     try {
