@@ -33,7 +33,7 @@ module.exports = async (req, res) => {
     }
 
     // commerceOrder único
-    const commerceOrder = `FV|${planId}|${emailNorm}|${Date.now()}`;
+    const commerceOrder = `FV${Date.now()}`;
 
     const optional = JSON.stringify({
       planId,
