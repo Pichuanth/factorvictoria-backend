@@ -94,7 +94,9 @@ module.exports = async (req, res) => {
       commerceOrder,
       flowOrder,
       token,
-      // compat: algunos frontends esperan paymentUrl
+      // Frontend expects "url"
+      url: checkoutUrl,
+      // Backward/compat aliases
       paymentUrl: checkoutUrl,
       checkoutUrl,
     });
