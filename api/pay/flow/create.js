@@ -18,7 +18,6 @@ module.exports = async (req, res) => {
 
     // Normaliza email para consistencia (login/memberships)
     const emailNorm = String(email).trim().toLowerCase();
-
     const plan = plans[planId];
 
     // === Test mode (para pruebas sin cobrar monto real) ===
@@ -28,7 +27,10 @@ module.exports = async (req, res) => {
 
     const BACKEND_URL = process.env.BACKEND_URL;
     const FRONTEND_URL = process.env.FRONTEND_URL;
-    if (!BACKEND_URL || !FRONTEND_URL) return res.status(500).json({ error: "BACKEND_URL/FRONTEND_URL missing" });
+    if (!BACKEND_URL || !FRONTEND_URL) {
+      console.error("FLOW_CREATE missing BACKEND_URL/FRONTEND_URL");
+      return res.status(500).json({ error: "BACKEND_URL/FRONTEND_URL missing" });
+    }
 
     // commerceOrder único
     const commerceOrder = `FV|${planId}|${emailNorm}|${Date.now()}`;
@@ -39,8 +41,14 @@ module.exports = async (req, res) => {
       userId: userId || null,
     });
 
+    // NOTIFICATION URL (Flow enviará POST token=... aquí)
     const urlConfirmation = `${BACKEND_URL}/api/pay/flow/confirm`;
+
+    // RETURN URL (usuario vuelve al front)
+    // Nota: incluimos "order" para poder hacer fallback desde el front si el notify falló.
     const urlReturn = `${FRONTEND_URL}${returnPath || "/perfil"}?flow=return&order=${encodeURIComponent(commerceOrder)}`;
+
+    console.log("[FLOW_CREATE] start", { planId, email: emailNorm, amount, testMode, commerceOrder });
 
     const data = await flowPost("/payment/create", {
       commerceOrder,
@@ -53,19 +61,30 @@ module.exports = async (req, res) => {
       optional,
     });
 
+    const token = data.token || null;
+    const flowOrder = data.flowOrder || null;
+
     // Persist intent (si DB está configurada)
     try {
       await db.query(
         `insert into payment_intents (commerce_order, plan_id, email, user_id, flow_token, flow_order, status)
          values ($1,$2,$3,$4,$5,$6,$7)
-         on conflict (commerce_order) do nothing`,
-        [commerceOrder, planId, emailNorm, userId || null, data.token || null, data.flowOrder || null, "created"]
+         on conflict (commerce_order) do update set
+           plan_id = excluded.plan_id,
+           email = excluded.email,
+           user_id = excluded.user_id,
+           flow_token = excluded.flow_token,
+           flow_order = excluded.flow_order,
+           status = excluded.status`,
+        [commerceOrder, planId, emailNorm, userId || null, token, flowOrder, "created"]
       );
     } catch (e) {
-      // no romper si DB no está lista
+      console.warn("[FLOW_CREATE] could not persist intent:", e?.message || e);
     }
 
-    const checkoutUrl = data.url ? `${data.url}?token=${encodeURIComponent(data.token)}` : null;
+    const checkoutUrl = data.url ? `${data.url}?token=${encodeURIComponent(token)}` : null;
+
+    console.log("[FLOW_CREATE] ok", { commerceOrder, flowOrder, hasCheckoutUrl: !!checkoutUrl });
 
     return res.status(200).json({
       ok: true,
@@ -73,11 +92,14 @@ module.exports = async (req, res) => {
       testMode,
       planId,
       commerceOrder,
-      flowOrder: data.flowOrder || null,
-      token: data.token || null,
+      flowOrder,
+      token,
+      // compat: algunos frontends esperan paymentUrl
+      paymentUrl: checkoutUrl,
       checkoutUrl,
     });
   } catch (err) {
+    console.error("[FLOW_CREATE] error:", err);
     return res.status(500).json({ error: "flow create failed", detail: String(err?.message || err) });
   }
 };
