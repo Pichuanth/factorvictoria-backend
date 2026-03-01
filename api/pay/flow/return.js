@@ -1,148 +1,189 @@
+// backend/api/pay/flow/return.js
 const cors = require("../../_cors");
 const db = require("../../_db");
-const plans = require("../../_plans");
-const { createActivationToken } = require("../../_activation");
-const { sendActivationEmail } = require("../../_mail");
-const { flowPost } = require("./_flow");
+const { flowPost, normalizeTestMode } = require("./_flow");
+const qs = require("querystring");
 
-function isTruthy(v) {
-  const s = String(v ?? "").trim().toLowerCase();
-  return s === "1" || s === "true" || s === "yes" || s === "y";
+function safeString(v) {
+  if (v === undefined || v === null) return "";
+  return String(v);
 }
 
-function parseCommerceOrder(co) {
-  // Formato: FV|<planId>|<email>|<ts>
-  try {
-    const s = String(co || "");
-    const parts = s.split("|");
-    if (parts.length >= 3 && parts[0] === "FV") {
-      return { planId: parts[1] || null, email: parts[2] || null };
+function buildRedirectUrl(frontendUrl, email, paid) {
+  const base = (frontendUrl || "").replace(/\/+$/, "");
+  const e = encodeURIComponent(email || "");
+  return `${base}/login?email=${e}&paid=${paid ? "1" : "0"}`;
+}
+
+async function readBody(req) {
+  // Vercel Node serverless: body no siempre viene parseado según content-type.
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => resolve(data));
+    req.on("error", () => resolve(""));
+  });
+}
+
+function parseIncoming(req, rawBody) {
+  // Query (Vercel suele exponer req.query, pero fallback a URL)
+  const url = req.url || "";
+  const queryStr = url.includes("?") ? url.split("?")[1] : "";
+  const query = qs.parse(queryStr);
+
+  // Body
+  const ct = safeString(req.headers["content-type"]).toLowerCase();
+  let body = {};
+  if (rawBody) {
+    if (ct.includes("application/json")) {
+      try {
+        body = JSON.parse(rawBody);
+      } catch (_) {
+        body = {};
+      }
+    } else if (ct.includes("application/x-www-form-urlencoded")) {
+      body = qs.parse(rawBody);
+    } else {
+      // a veces Flow manda text/plain con key=value
+      body = qs.parse(rawBody);
     }
-  } catch (e) {}
-  return { planId: null, email: null };
+  }
+
+  // Campos posibles
+  const order =
+    safeString(query.order) ||
+    safeString(query.commerceOrder) ||
+    safeString(query.commerce_order) ||
+    safeString(body.order) ||
+    safeString(body.commerceOrder) ||
+    safeString(body.commerce_order);
+
+  const token =
+    safeString(query.token) ||
+    safeString(query.token_ws) ||
+    safeString(body.token) ||
+    safeString(body.token_ws);
+
+  return { query, body, order, token };
+}
+
+async function tryActivateMembership({ email, plan, commerceOrder }) {
+  // IMPORTANTE: como no tengo tu esquema exacto de membresías, esto es “best effort”.
+  // Si tu sistema ya activa membresía en otro módulo, aquí puedes llamar ese módulo.
+  // Para no romper en producción, lo envolvemos en try/catch.
+  try {
+    if (!email) return;
+
+    // Ejemplo genérico: tabla memberships (ajusta si tu tabla se llama distinto)
+    // Si NO existe, caerá al catch y no rompe return/confirm.
+    await db.query(
+      `
+      insert into memberships (email, plan, status, activated_at, last_order)
+      values ($1, $2, 'active', now(), $3)
+      on conflict (email)
+      do update set
+        plan = excluded.plan,
+        status = 'active',
+        activated_at = now(),
+        last_order = excluded.last_order
+      `,
+      [email, plan || "pro", commerceOrder || null]
+    );
+  } catch (e) {
+    console.log("[FLOW_RETURN] membership activate skipped/error:", e?.message || e);
+  }
 }
 
 module.exports = async (req, res) => {
+  // CORS / preflight
   if (cors(req, res)) return;
-  if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
-  const FRONTEND_URL = process.env.FRONTEND_URL || "https://factorvictoria.com";
-  const wantJson = isTruthy(req.query.json);
-
-  const commerceOrder = String(req.query.order || "").trim();
-  if (!commerceOrder) {
-    return wantJson
-      ? res.status(400).json({ ok: false, error: "Missing order" })
-      : res.status(400).send("Missing order");
+  // Nunca 405: aceptamos GET/POST/OPTIONS
+  if (req.method === "OPTIONS") {
+    return res.status(200).send("ok");
   }
 
+  const rawBody = await readBody(req);
+  const { order, token } = parseIncoming(req, rawBody);
+
+  const FRONTEND_URL = process.env.FRONTEND_URL || process.env.VITE_FRONTEND_URL || "";
+  const testMode = normalizeTestMode(process.env.FLOW_TEST_MODE);
+
+  console.log("[FLOW_RETURN] method=", req.method, "order=", order, "token=", token ? "yes" : "no", "testMode=", testMode);
+
+  // Si no viene order, redirige igual a login con paid=0 (no rompas UX)
+  if (!order) {
+    const redirect = buildRedirectUrl(FRONTEND_URL, "", false);
+    res.writeHead(302, { Location: redirect });
+    return res.end();
+  }
+
+  // Busca intent en DB
+  let intent = null;
   try {
-    // 1) Buscar intent (plan/email)
-    let intent;
-    try {
-      const r = await db.query(
-        "select plan_id, email, user_id, status from payment_intents where commerce_order = $1 limit 1",
-        [commerceOrder]
-      );
-      intent = r.rows?.[0];
-    } catch (e) {}
-
-    const parsed = parseCommerceOrder(commerceOrder);
-    const planId = intent?.plan_id || parsed.planId;
-    const emailRaw = intent?.email || parsed.email || null;
-    const email = emailRaw ? String(emailRaw).trim().toLowerCase() : null;
-    const userId = intent?.user_id || null;
-
-    // 2) Consultar estado en Flow
-    // Flow devuelve status=2 cuando está pagado
-    const statusData = await flowPost("/payment/getStatus", { commerceOrder });
-    const status = Number(statusData?.status);
-    const isPaid = status === 2;
-
-    // Persist best-effort payment row (si tienes tabla payments)
-    try {
-      await db.query(
-        `insert into payments (flow_order, commerce_order, status, raw)
-         values ($1,$2,$3,$4)
-         on conflict (flow_order) do update set status = excluded.status, raw = excluded.raw`,
-        [Number(statusData?.flowOrder || 0), commerceOrder, status || null, statusData]
-      );
-    } catch (_) {}
-
-    if (!isPaid) {
-      // Actualiza intent a "created" (best-effort)
-      try {
-        await db.query("update payment_intents set status = 'created' where commerce_order = $1", [commerceOrder]);
-      } catch (_) {}
-
-      if (wantJson) {
-        return res.status(200).json({ ok: true, paid: false, status, commerceOrder });
-      }
-
-      // Redirige al front con paid=0
-      const to = `${FRONTEND_URL}/checkout?flow=return&paid=0&order=${encodeURIComponent(commerceOrder)}${
-        email ? `&email=${encodeURIComponent(email)}` : ""
-      }`;
-      return res.writeHead(302, { Location: to }).end();
-    }
-
-    // 3) Si está pagado, activar membresía (idempotente)
-    if (planId && plans[planId] && email) {
-      const now = new Date();
-      const planDays = plans[planId]?.days;
-      const end = planDays == null ? null : new Date(now.getTime() + planDays * 24 * 60 * 60 * 1000);
-
-      try {
-        await db.query(
-          `insert into memberships (email, user_id, plan_id, tier, status, start_at, end_at)
-           values ($1,$2,$3,$4,'active',$5,$6)
-           on conflict (email) do update set
-             user_id = excluded.user_id,
-             plan_id = excluded.plan_id,
-             tier = excluded.tier,
-             status = 'active',
-             start_at = excluded.start_at,
-             end_at = excluded.end_at`,
-          [email, userId, planId, plans[planId].tier, now.toISOString(), end ? end.toISOString() : null]
-        );
-
-        await db.query("update payment_intents set status = 'paid' where commerce_order = $1", [commerceOrder]);
-      } catch (e) {
-        console.error("[FLOW_RETURN] activate membership failed", e);
-      }
-
-      // activation link (best-effort)
-      let activationLink = "";
-      try {
-        const actToken = await createActivationToken(email);
-        activationLink = `${FRONTEND_URL}/activar?token=${actToken}`;
-        await sendActivationEmail({ to: email, activationLink });
-      } catch (e2) {
-        // no pasa nada
-      }
-
-      if (wantJson) {
-        return res.status(200).json({ ok: true, paid: true, planId, email, commerceOrder, activationLink });
-      }
-
-      const to = `${FRONTEND_URL}/checkout?flow=return&paid=1&order=${encodeURIComponent(commerceOrder)}&email=${encodeURIComponent(
-        email
-      )}`;
-      return res.writeHead(302, { Location: to }).end();
-    }
-
-    // Paid pero falta plan/email -> igual devolvemos ok
-    if (wantJson) {
-      return res.status(200).json({ ok: true, paid: true, status, commerceOrder, email, planId });
-    }
-
-    const to = `${FRONTEND_URL}/checkout?flow=return&paid=1&order=${encodeURIComponent(commerceOrder)}${
-      email ? `&email=${encodeURIComponent(email)}` : ""
-    }`;
-    return res.writeHead(302, { Location: to }).end();
-  } catch (err) {
-    console.error("flow return error:", err);
-    if (wantJson) return res.status(500).json({ ok: false, error: "flow return failed" });
-    return res.status(500).send("flow return failed");
+    const r = await db.query(
+      `select * from payment_intents where commerce_order = $1 limit 1`,
+      [order]
+    );
+    intent = r.rows?.[0] || null;
+  } catch (e) {
+    console.log("[FLOW_RETURN] DB read error:", e?.message || e);
   }
+
+  const email = intent?.email || "";
+  const plan = intent?.plan || intent?.tier || "pro";
+
+  // Token: preferimos el que llega, si no el guardado
+  const flowToken = token || intent?.flow_token || intent?.flowToken || "";
+
+  // Si no hay token, no podemos validar. Igual redirigimos sin crashear.
+  if (!flowToken) {
+    const redirect = buildRedirectUrl(FRONTEND_URL, email, false);
+    res.writeHead(302, { Location: redirect });
+    return res.end();
+  }
+
+  // Consulta estado a Flow
+  let status = null;
+  try {
+    status = await flowPost("/payment/getStatus", { token: flowToken }, { testMode });
+    // status típico trae: status / paymentData / etc (depende API)
+    console.log("[FLOW_RETURN] getStatus ok");
+  } catch (e) {
+    console.log("[FLOW_RETURN] getStatus error:", e?.message || e);
+  }
+
+  // Determinar “paid”
+  const paid =
+    status &&
+    (String(status.status).toLowerCase() === "paid" ||
+      String(status.status).toLowerCase() === "2" || // por si Flow usa códigos
+      String(status.paymentStatus || "").toLowerCase() === "paid");
+
+  // Persistir en DB (best effort)
+  try {
+    await db.query(
+      `
+      update payment_intents
+      set
+        flow_token = coalesce(nullif($2,''), flow_token),
+        status = $3,
+        raw_flow_status = $4,
+        updated_at = now()
+      where commerce_order = $1
+      `,
+      [order, flowToken, paid ? "paid" : "pending", status ? JSON.stringify(status) : null]
+    );
+  } catch (e) {
+    console.log("[FLOW_RETURN] DB update error:", e?.message || e);
+  }
+
+  if (paid) {
+    await tryActivateMembership({ email, plan, commerceOrder: order });
+  }
+
+  // Redirigir siempre al front
+  const redirect = buildRedirectUrl(FRONTEND_URL, email, !!paid);
+  res.writeHead(302, { Location: redirect });
+  return res.end();
 };

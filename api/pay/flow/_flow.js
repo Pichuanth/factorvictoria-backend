@@ -3,6 +3,11 @@
 // Docs: https://developers.flow.cl/en/docs/tutorial-basics/create-order
 const { createHmac } = require("node:crypto");
 
+function normalizeTestMode(v) {
+  const s = String(v || "").trim().toLowerCase();
+  return s === "true" || s === "1" || s === "yes" || s === "on";
+}
+
 function flowSign(params, secretKey) {
   const keys = Object.keys(params).sort();
   let toSign = "";
@@ -11,7 +16,12 @@ function flowSign(params, secretKey) {
 }
 
 function assertEnv() {
-  const FLOW_API_URL = process.env.FLOW_API_URL || "https://www.flow.cl/api";
+  // Si no defines FLOW_API_URL, elegimos sandbox/prod en base a FLOW_TEST_MODE.
+  // - Prod:   https://www.flow.cl/api
+  // - Test:   https://sandbox.flow.cl/api
+  const testMode = normalizeTestMode(process.env.FLOW_TEST_MODE);
+  const FLOW_API_URL =
+    process.env.FLOW_API_URL || (testMode ? "https://sandbox.flow.cl/api" : "https://www.flow.cl/api");
   const FLOW_API_KEY = process.env.FLOW_API_KEY;
   const FLOW_SECRET_KEY = process.env.FLOW_SECRET_KEY;
   if (!FLOW_API_KEY || !FLOW_SECRET_KEY) throw new Error("FLOW_API_KEY/FLOW_SECRET_KEY missing");
@@ -42,4 +52,4 @@ async function flowPost(path, params) {
   return data;
 }
 
-module.exports = { flowPost, flowSign, assertEnv };
+module.exports = { flowPost, flowSign, assertEnv, normalizeTestMode };

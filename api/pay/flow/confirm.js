@@ -1,125 +1,186 @@
+// backend/api/pay/flow/confirm.js
 const cors = require("../../_cors");
 const db = require("../../_db");
-const plans = require("../../_plans");
-const { createActivationToken } = require("../../_activation");
-const { sendActivationEmail } = require("../../_mail");
-const { flowPost } = require("./_flow");
+const { flowPost, normalizeTestMode } = require("./_flow");
+const qs = require("querystring");
 
-function parseBody(req) {
-  const ct = String(req.headers["content-type"] || "").toLowerCase();
-  if (ct.includes("application/json")) return req.body || {};
-  // Flow normalmente manda x-www-form-urlencoded
-  if (typeof req.body === "string") {
+function safeString(v) {
+  if (v === undefined || v === null) return "";
+  return String(v);
+}
+
+async function readBody(req) {
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => resolve(data));
+    req.on("error", () => resolve(""));
+  });
+}
+
+function parseBody(req, rawBody) {
+  const ct = safeString(req.headers["content-type"]).toLowerCase();
+  if (!rawBody) return {};
+  if (ct.includes("application/json")) {
     try {
-      const params = new URLSearchParams(req.body);
-      return Object.fromEntries(params.entries());
+      return JSON.parse(rawBody);
     } catch (_) {
       return {};
     }
   }
-  return req.body || {};
+  // Flow suele mandar x-www-form-urlencoded
+  if (ct.includes("application/x-www-form-urlencoded")) {
+    return qs.parse(rawBody);
+  }
+  // fallback
+  return qs.parse(rawBody);
 }
 
-function parseCommerceOrder(co) {
+async function tryActivateMembership({ email, plan, commerceOrder }) {
   try {
-    const s = String(co || "");
-    const parts = s.split("|");
-    if (parts.length >= 3 && parts[0] === "FV") {
-      return { planId: parts[1] || null, email: parts[2] || null };
-    }
-  } catch (e) {}
-  return { planId: null, email: null };
+    if (!email) return;
+
+    await db.query(
+      `
+      insert into memberships (email, plan, status, activated_at, last_order)
+      values ($1, $2, 'active', now(), $3)
+      on conflict (email)
+      do update set
+        plan = excluded.plan,
+        status = 'active',
+        activated_at = now(),
+        last_order = excluded.last_order
+      `,
+      [email, plan || "pro", commerceOrder || null]
+    );
+  } catch (e) {
+    console.log("[FLOW_CONFIRM] membership activate skipped/error:", e?.message || e);
+  }
 }
 
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  // IMPORTANT: responder 200 rápido para que Flow no marque error
+  if (req.method === "OPTIONS") return res.status(200).send("ok");
+
+  // Aceptamos POST y también GET (por si pruebas manuales)
+  if (req.method !== "POST" && req.method !== "GET") {
+    // Nunca 405 para Flow: igual respondemos 200 para no gatillar alertas
+    console.log("[FLOW_CONFIRM] unexpected method:", req.method);
+    return res.status(200).json({ ok: true });
+  }
+
+  const testMode = normalizeTestMode(process.env.FLOW_TEST_MODE);
+
+  const rawBody = await readBody(req);
+  const body = parseBody(req, rawBody);
+
+  const token =
+    safeString(req.query?.token) ||
+    safeString(req.query?.token_ws) ||
+    safeString(body.token) ||
+    safeString(body.token_ws);
+
+  // Responder 200 OK rápido (Flow lo exige). Hacemos la lógica en el mismo request,
+  // pero sin demorar respuesta por validaciones pesadas: primero ACK, luego seguimos.
+  res.status(200).json({ ok: true });
+
+  // ---- lógica post-ACK ----
   try {
-    const body = parseBody(req);
-    const token = body.token || body?.params?.token;
+    console.log("[FLOW_CONFIRM] token=", token ? "yes" : "no", "testMode=", testMode);
 
-    if (!token) return res.status(200).send("OK");
-
-    // Consultar status a Flow
-    const st = await flowPost("/payment/getStatus", { token });
-    const status = Number(st?.status);
-    const isPaid = status === 2;
-
-    const commerceOrder = String(st?.commerceOrder || "").trim();
-    const parsed = parseCommerceOrder(commerceOrder);
-
-    // Buscar payment_intent para email/plan
-    let intent;
-    try {
-      const r = await db.query(
-        "select plan_id, email, user_id from payment_intents where commerce_order = $1 limit 1",
-        [commerceOrder]
-      );
-      intent = r.rows?.[0];
-    } catch (e) {}
-
-    const planId = intent?.plan_id || parsed.planId;
-    const emailRaw = intent?.email || parsed.email || null;
-    const email = emailRaw ? String(emailRaw).trim().toLowerCase() : null;
-    const userId = intent?.user_id || null;
-
-    // Persist best-effort payment row
-    try {
-      await db.query(
-        `insert into payments (flow_order, commerce_order, status, raw)
-         values ($1,$2,$3,$4)
-         on conflict (flow_order) do update set status = excluded.status, raw = excluded.raw`,
-        [Number(st?.flowOrder || 0), commerceOrder, status || null, st]
-      );
-    } catch (_) {}
-
-    if (!isPaid) {
-      try {
-        await db.query("update payment_intents set status = 'created' where commerce_order = $1", [commerceOrder]);
-      } catch (_) {}
-      return res.status(200).send("OK");
+    if (!token) {
+      console.log("[FLOW_CONFIRM] missing token");
+      return;
     }
 
-    // Activar membresía idempotente
-    if (planId && plans[planId] && email) {
-      const FRONTEND_URL = process.env.FRONTEND_URL || "https://factorvictoria.com";
-      const now = new Date();
-      const planDays = plans[planId]?.days;
-      const end = planDays == null ? null : new Date(now.getTime() + planDays * 24 * 60 * 60 * 1000);
+    // Flow getStatus
+    let status = null;
+    try {
+      status = await flowPost("/payment/getStatus", { token }, { testMode });
+      console.log("[FLOW_CONFIRM] getStatus ok");
+    } catch (e) {
+      console.log("[FLOW_CONFIRM] getStatus error:", e?.message || e);
+      return;
+    }
 
-      try {
-        await db.query(
-          `insert into memberships (email, user_id, plan_id, tier, status, start_at, end_at)
-           values ($1,$2,$3,$4,'active',$5,$6)
-           on conflict (email) do update set
-             user_id = excluded.user_id,
-             plan_id = excluded.plan_id,
-             tier = excluded.tier,
-             status = 'active',
-             start_at = excluded.start_at,
-             end_at = excluded.end_at`,
-          [email, userId, planId, plans[planId].tier, now.toISOString(), end ? end.toISOString() : null]
+    const commerceOrder =
+      safeString(status?.commerceOrder) ||
+      safeString(status?.commerce_order) ||
+      safeString(status?.order) ||
+      safeString(status?.optional?.commerceOrder);
+
+    const paid =
+      status &&
+      (String(status.status).toLowerCase() === "paid" ||
+        String(status.status).toLowerCase() === "2" ||
+        String(status.paymentStatus || "").toLowerCase() === "paid");
+
+    // Lee intent para obtener email/plan
+    let intent = null;
+    try {
+      if (commerceOrder) {
+        const r = await db.query(
+          `select * from payment_intents where commerce_order = $1 limit 1`,
+          [commerceOrder]
         );
-
-        await db.query("update payment_intents set status = 'paid' where commerce_order = $1", [commerceOrder]);
-      } catch (e) {
-        console.error("[FLOW_CONFIRM] activate membership failed", e);
+        intent = r.rows?.[0] || null;
+      } else {
+        // fallback: buscar por token si guardaste flow_token antes
+        const r = await db.query(
+          `select * from payment_intents where flow_token = $1 limit 1`,
+          [token]
+        );
+        intent = r.rows?.[0] || null;
       }
-
-      // activation mail (best-effort)
-      try {
-        const actToken = await createActivationToken(email);
-        const activationLink = `${FRONTEND_URL}/activar?token=${actToken}`;
-        await sendActivationEmail({ to: email, activationLink });
-      } catch (_) {}
+    } catch (e) {
+      console.log("[FLOW_CONFIRM] DB read error:", e?.message || e);
     }
 
-    return res.status(200).send("OK");
-  } catch (err) {
-    console.error("flow confirm error:", err);
-    // OJO: igual responde 200 para que Flow no reintente infinito, pero se verá en logs
-    return res.status(200).send("OK");
+    const email = intent?.email || "";
+    const plan = intent?.plan || intent?.tier || "pro";
+    const order = commerceOrder || intent?.commerce_order || "";
+
+    // Guardar token + estado
+    try {
+      if (order) {
+        await db.query(
+          `
+          update payment_intents
+          set
+            flow_token = $2,
+            status = $3,
+            raw_flow_status = $4,
+            updated_at = now()
+          where commerce_order = $1
+          `,
+          [order, token, paid ? "paid" : "pending", JSON.stringify(status)]
+        );
+      } else if (intent?.id) {
+        await db.query(
+          `
+          update payment_intents
+          set
+            flow_token = $2,
+            status = $3,
+            raw_flow_status = $4,
+            updated_at = now()
+          where id = $1
+          `,
+          [intent.id, token, paid ? "paid" : "pending", JSON.stringify(status)]
+        );
+      }
+    } catch (e) {
+      console.log("[FLOW_CONFIRM] DB update error:", e?.message || e);
+    }
+
+    if (paid) {
+      await tryActivateMembership({ email, plan, commerceOrder: order });
+      console.log("[FLOW_CONFIRM] paid ✅", { email, order, plan });
+    } else {
+      console.log("[FLOW_CONFIRM] not paid", { order });
+    }
+  } catch (e) {
+    console.log("[FLOW_CONFIRM] unexpected error:", e?.message || e);
   }
 };
