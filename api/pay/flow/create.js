@@ -46,7 +46,7 @@ module.exports = async (req, res) => {
 
     // RETURN URL (usuario vuelve al front)
     // Nota: incluimos "order" para poder hacer fallback desde el front si el notify falló.
-    const urlReturn = `${FRONTEND_URL}${returnPath || "/perfil"}?flow=return&order=${encodeURIComponent(commerceOrder)}`;
+    const urlReturn = `${BACKEND_URL}/api/pay/flow/return?order=${encodeURIComponent(commerceOrder)}`;
 
     console.log("[FLOW_CREATE] start", { planId, email: emailNorm, amount, testMode, commerceOrder });
 
