@@ -1,7 +1,7 @@
-const cors = require("../_cors");
-const db = require("../_db");
-const { createActivationToken } = require("../_activation");
-const { sendActivationEmail } = require("../_mail");
+const cors = require("../../_cors");
+const db = require("../../_db");
+const { createActivationToken } = require("../../_activation");
+const { sendActivationEmail } = require("../../_mail");
 const plans = require("../_plans");
 const { flowPost } = require("./_flow");
 
