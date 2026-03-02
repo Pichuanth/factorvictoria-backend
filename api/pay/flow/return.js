@@ -67,30 +67,17 @@ function parseIncoming(req, rawBody) {
   return { query, body, order, token };
 }
 
-async function tryActivateMembership({ email, plan, commerceOrder }) {
-  // IMPORTANTE: como no tengo tu esquema exacto de membresías, esto es “best effort”.
-  // Si tu sistema ya activa membresía en otro módulo, aquí puedes llamar ese módulo.
-  // Para no romper en producción, lo envolvemos en try/catch.
+async function tryActivateMembership({ email, planId, commerceOrder }) {
   try {
-    if (!email) return;
-
-    // Ejemplo genérico: tabla memberships (ajusta si tu tabla se llama distinto)
-    // Si NO existe, caerá al catch y no rompe return/confirm.
-    await db.query(
-      `
-      insert into memberships (email, plan, status, activated_at, last_order)
-      values ($1, $2, 'active', now(), $3)
-      on conflict (email)
-      do update set
-        plan = excluded.plan,
-        status = 'active',
-        activated_at = now(),
-        last_order = excluded.last_order
-      `,
-      [email, plan || "pro", commerceOrder || null]
-    );
+    await upsertMembershipFromPayment({
+      email,
+      planId,
+      status: "active",
+      startAt: new Date().toISOString(),
+    });
+    console.log("[FLOW_RETURN] membership upserted", { email, planId, commerceOrder });
   } catch (e) {
-    console.log("[FLOW_RETURN] membership activate skipped/error:", e?.message || e);
+    console.warn("[FLOW_RETURN] membership upsert failed", e && (e.message || e));
   }
 }
 

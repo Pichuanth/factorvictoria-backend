@@ -1,74 +1,71 @@
+// backend/api/membership/_membership.js
 const db = require("../_db");
 
-// NOTE: We keep this helper in api/membership/_membership.js because Vercel runs on Linux
-// and paths/filenames are case-sensitive. Some earlier versions used a misspelled filename
-// like _memmership.js which works on Windows but fails on Vercel.
-
-function normalizeEmail(email) {
-  return String(email || "").trim().toLowerCase();
-}
-
-// Returns the latest membership row for an email (or null).
-async function getLatestMembershipByEmail(email) {
-  email = normalizeEmail(email);
-  if (!email) return null;
-
-  // Table name can vary depending on your schema. We support both:
-  // - memberships (recommended)
-  // - membership (legacy)
-  const candidates = ["memberships", "membership"];
-
-  for (const table of candidates) {
-    try {
-      const { rows } = await db.query(
-        `
-        SELECT *
-        FROM ${table}
-        WHERE lower(email) = $1
-        ORDER BY COALESCE(updated_at, created_at, now()) DESC, id DESC
-        LIMIT 1
-        `,
-        [email]
-      );
-      if (rows && rows[0]) return rows[0];
-    } catch (e) {
-      // try next table name
-    }
-  }
-
-  return null;
-}
-
-async function getMembershipByEmail(email) {
-  return getLatestMembershipByEmail(email);
+function _inferTier(planId) {
+  const p = String(planId || "").toLowerCase();
+  if (p.includes("vital")) return "vitalicio";
+  if (p.includes("leyenda")) return "leyenda";
+  if (p.includes("campe")) return "campeon";
+  if (p.includes("gole")) return "goleador";
+  // default: pro unlock (mensual / trimestral / anual)
+  return "pro";
 }
 
 function isActiveMembership(m) {
   if (!m) return false;
-  // Support different schemas:
-  // - active boolean
-  // - status string
-  // - expires_at timestamp
-  if (typeof m.active === "boolean") return m.active;
-
   const status = String(m.status || "").toLowerCase();
-  if (status) return status === "active" || status === "paid" || status === "ok";
+  if (status && status !== "active") return false;
 
-  const exp = m.expires_at || m.expire_at || m.valid_until;
-  if (exp) {
-    const t = new Date(exp).getTime();
-    if (!Number.isNaN(t)) return t > Date.now();
+  // Optional expiration support if you add end_at later
+  if (m.end_at) {
+    const end = new Date(m.end_at);
+    if (!isNaN(end.getTime()) && end.getTime() < Date.now()) return false;
   }
+  return true;
+}
 
-  // If we only have a plan_id/tier and no status fields, treat as active
-  // (better to allow access than block paying users).
-  if (m.plan_id || m.tier) return true;
+async function getLatestMembershipByEmail(email) {
+  const e = String(email || "").trim().toLowerCase();
+  const q = `
+    select *
+    from memberships
+    where lower(email)=lower($1)
+    order by start_at desc nulls last, id desc
+    limit 1
+  `;
+  const r = await db.query(q, [e]);
+  return r.rows[0] || null;
+}
 
-  return false;
+// Back-compat alias (older code may call this)
+async function getMembershipByEmail(email) {
+  return getLatestMembershipByEmail(email);
+}
+
+// Called from Flow confirm/return after payment is validated.
+async function upsertMembershipFromPayment({ email, planId, status = "active", startAt, tier }) {
+  const e = String(email || "").trim().toLowerCase();
+  const pid = String(planId || "").trim();
+  if (!e || !pid) throw new Error("upsertMembershipFromPayment: missing email/planId");
+
+  const t = tier ? String(tier).trim() : _inferTier(pid);
+  const s = String(status || "active").trim().toLowerCase();
+  const start = startAt ? new Date(startAt) : new Date();
+  const startIso = isNaN(start.getTime()) ? new Date().toISOString() : start.toISOString();
+
+  // Insert a new row (keeps history). Login reads the latest.
+  const q = `
+    insert into memberships (email, plan_id, tier, status, start_at)
+    values ($1,$2,$3,$4,$5)
+    returning *
+  `;
+  const r = await db.query(q, [e, pid, t, s, startIso]);
+  return r.rows[0] || null;
 }
 
 module.exports = {
   getMembershipByEmail,
   getLatestMembershipByEmail,
   isActiveMembership,
+  upsertMembershipFromPayment,
 };
