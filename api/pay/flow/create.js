@@ -12,7 +12,15 @@ module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const { planId, email, userId, returnPath } = req.body || {};
+    // Vercel/Node sometimes provides req.body as a string
+    let body = req.body;
+    try {
+      if (typeof body === "string") body = JSON.parse(body);
+    } catch {
+      // ignore
+    }
+
+    const { planId, email, userId, returnPath } = body || {};
     if (!planId || !plans[planId]) return res.status(400).json({ error: "planId inválido" });
     if (!email) return res.status(400).json({ error: "email requerido" });
 
@@ -25,11 +33,18 @@ module.exports = async (req, res) => {
     const testAmount = Number(process.env.FLOW_TEST_AMOUNT_CLP || 1000);
     const amount = testMode ? testAmount : plan.amount;
 
-    const BACKEND_URL = process.env.BACKEND_URL;
-    const FRONTEND_URL = process.env.FRONTEND_URL;
-    if (!BACKEND_URL || !FRONTEND_URL) {
-      console.error("FLOW_CREATE missing BACKEND_URL/FRONTEND_URL");
-      return res.status(500).json({ error: "BACKEND_URL/FRONTEND_URL missing" });
+    // Prefer explicit envs, but fall back to request headers to avoid hard failures
+    const BACKEND_URL =
+      process.env.BACKEND_URL ||
+      (req.headers.host ? `https://${req.headers.host}` : "");
+
+    const FRONTEND_URL =
+      process.env.FRONTEND_URL ||
+      (typeof req.headers.origin === "string" ? req.headers.origin : "https://factorvictoria.com");
+
+    if (!BACKEND_URL) {
+      console.error("[FLOW_CREATE] missing BACKEND_URL and cannot infer from req.headers.host");
+      return res.status(500).json({ error: "BACKEND_URL missing" });
     }
 
     // commerceOrder único
@@ -45,8 +60,12 @@ module.exports = async (req, res) => {
     const urlConfirmation = `${BACKEND_URL}/api/pay/flow/confirm`;
 
     // RETURN URL (usuario vuelve al front)
-    // Nota: incluimos "order" para poder hacer fallback desde el front si el notify falló.
-    const urlReturn = `${BACKEND_URL}/api/pay/flow/return?order=${encodeURIComponent(commerceOrder)}`;
+    // - Usamos el frontend directamente para mejorar UX.
+    // - Pasamos order + email para que el front pueda mostrar estado y hacer polling si lo necesitas.
+    const rp = typeof returnPath === "string" && returnPath.startsWith("/") ? returnPath : "/login";
+    const urlReturn = `${FRONTEND_URL}${rp}?email=${encodeURIComponent(emailNorm)}&paid=0&order=${encodeURIComponent(
+      commerceOrder
+    )}`;
 
     console.log("[FLOW_CREATE] start", { planId, email: emailNorm, amount, testMode, commerceOrder });
 
