@@ -101,7 +101,7 @@ module.exports = async (req, res) => {
   // Si no viene order, redirige igual a login con paid=0 (no rompas UX)
   if (!order) {
     const redirect = buildRedirectUrl(FRONTEND_URL, "", false);
-    res.writeHead(302, { Location: redirect });
+    res.writeHead(303, { Location: redirect });
     return res.end();
   }
 
@@ -126,7 +126,7 @@ module.exports = async (req, res) => {
   // Si no hay token, no podemos validar. Igual redirigimos sin crashear.
   if (!flowToken) {
     const redirect = buildRedirectUrl(FRONTEND_URL, email, false);
-    res.writeHead(302, { Location: redirect });
+    res.writeHead(303, { Location: redirect });
     return res.end();
   }
 
@@ -171,6 +171,6 @@ module.exports = async (req, res) => {
 
   // Redirigir siempre al front
   const redirect = buildRedirectUrl(FRONTEND_URL, email, !!paid);
-  res.writeHead(302, { Location: redirect });
+  res.writeHead(303, { Location: redirect });
   return res.end();
 };

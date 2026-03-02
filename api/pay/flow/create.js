@@ -58,16 +58,12 @@ module.exports = async (req, res) => {
 
     // NOTIFICATION URL (Flow enviará POST token=... aquí)
     const urlConfirmation = `${BACKEND_URL}/api/pay/flow/confirm`;
-
-    // RETURN URL (usuario vuelve al front)
+// RETURN URL (usuario vuelve al front)
     // - Usamos el frontend directamente para mejorar UX.
     // - Pasamos order + email para que el front pueda mostrar estado y hacer polling si lo necesitas.
     const rp = typeof returnPath === "string" && returnPath.startsWith("/") ? returnPath : "/login";
-    const urlReturn = `${FRONTEND_URL}${rp}?email=${encodeURIComponent(emailNorm)}&paid=0&order=${encodeURIComponent(
-      commerceOrder
-    )}`;
-
-    console.log("[FLOW_CREATE] start", { planId, email: emailNorm, amount, testMode, commerceOrder });
+    const urlReturn = `${BACKEND_URL}/api/pay/flow/return`;
+console.log("[FLOW_CREATE] start", { planId, email: emailNorm, amount, testMode, commerceOrder });
 
     const data = await flowPost("/payment/create", {
       commerceOrder,
