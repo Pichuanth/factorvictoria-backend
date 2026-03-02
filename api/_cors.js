@@ -9,7 +9,7 @@ const ALLOWED = new Set([
 module.exports = function cors(req, res) {
   const origin = req.headers.origin;
 
-  // Permitir previews de Vercel del frontend si los usas
+  // Permitir previews de Vercel del frontend (si los usas)
   const isVercelPreview =
     origin && /^https:\/\/.*\.vercel\.app$/.test(origin);
 
@@ -28,7 +28,8 @@ module.exports = function cors(req, res) {
   if (req.method === "OPTIONS") {
     res.statusCode = 204;
     res.end();
-    return true; // cortamos aquí
+    return true;
   }
+
   return false;
 };
