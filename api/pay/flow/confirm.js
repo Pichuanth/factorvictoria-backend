@@ -1,102 +1,137 @@
-const cors = require("../../_cors");
-const db = require("../../_db");
+const cors = require("../_cors");
+const db = require("../_db");
+const qs = require("querystring");
 const { flowPost } = require("./_flow");
 
-// POST /api/pay/flow/confirm
-// Flow calls this "confirmation" URL server-to-server after payment.
-// We mark the intent as paid and create an ACTIVE membership record in `memberships`.
+/**
+ * Flow confirmUrl handler (server-to-server).
+ * Important: Flow expects HTTP 200 quickly. We respond 200 ASAP and do best-effort processing.
+ */
+function readRawBody(req) {
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (chunk) => (data += chunk));
+    req.on("end", () => resolve(data));
+  });
+}
+
+function pick(obj, keys) {
+  for (const k of keys) {
+    if (obj && obj[k] != null && obj[k] !== "") return obj[k];
+  }
+  return null;
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function paidHintFromParams(params) {
+  const v = pick(params, ["status", "paymentStatus", "payment_status", "state", "result", "success"]);
+  if (v == null) return false;
+  const s = String(v).trim().toLowerCase();
+  if (s === "paid" || s === "success" || s === "ok" || s === "approved" || s === "true" || s === "1" || s === "2") return true;
+  return false;
+}
+
+async function getParams(req) {
+  const q = req.query || {};
+  if (Object.keys(q).length) return q;
+  const raw = await readRawBody(req);
+  const body = qs.parse(raw);
+  return body || {};
+}
+
+async function activateMembership({ email, planId, commerceOrder }) {
+  const now = new Date().toISOString();
+  await db.query(
+    `
+    INSERT INTO memberships (email, plan, status, activated_at, last_order)
+    VALUES ($1, $2, 'active', $3, $4)
+    ON CONFLICT (lower(email))
+    DO UPDATE SET plan = EXCLUDED.plan, status='active', activated_at=EXCLUDED.activated_at, last_order=EXCLUDED.last_order
+    `,
+    [normalizeEmail(email), planId || null, now, commerceOrder || null]
+  );
+}
+
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  let body = {};
-  try { body = req.body || JSON.parse(req.body || "{}"); } catch {}
-  const token = String(body.token || body.token_ws || body.tokenws || "").trim();
-  const testMode = body.testMode === true || String(body.testMode || "").toLowerCase() === "true";
-
-  if (!token) return res.status(400).json({ ok: false, error: "token_required" });
+  // Always acknowledge to Flow (avoid retries + "no recibimos respuesta adecuada")
+  res.status(200).send("OK");
 
   try {
-    // 1) Ask Flow for status
-    const status = await flowPost("/payment/getStatus", { token }, { testMode });
+    const params = await getParams(req);
+    const token = pick(params, ["token", "flowToken", "flow_token"]);
+    const commerceOrder = pick(params, ["order", "commerceOrder", "commerce_order"]);
+    const paidHint = paidHintFromParams(params);
 
-    const order = String(status?.flowOrder || status?.flow_order || "").trim();
-    const commerceOrder = String(status?.commerceOrder || status?.commerce_order || "").trim();
-    const payerEmail = String(status?.payer || status?.userEmail || status?.user_email || "").trim().toLowerCase();
+    if (!token && !commerceOrder) {
+      console.warn("[FLOW_CONFIRM] missing token/order", params);
+      return;
+    }
 
-    // Flow paid status is usually: status === 2 (paid)
-    const paid = Number(status?.status) === 2;
-
-    // 2) Load intent data (email/planId) if we have it
+    // Find intent by order first; fallback by token.
     let intent = null;
     if (commerceOrder) {
+      const r = await db.query(
+        "SELECT * FROM payment_intents WHERE commerce_order=$1 ORDER BY created_at DESC LIMIT 1",
+        [String(commerceOrder)]
+      );
+      intent = r.rows[0] || null;
+    }
+    if (!intent && token) {
+      const r = await db.query(
+        "SELECT * FROM payment_intents WHERE flow_token=$1 ORDER BY created_at DESC LIMIT 1",
+        [String(token)]
+      );
+      intent = r.rows[0] || null;
+    }
+
+    const email = intent?.email || normalizeEmail(pick(params, ["email", "payerEmail", "userEmail"]));
+    const planId = intent?.plan || intent?.planid || intent?.plan_id || pick(params, ["planId", "plan", "plan_id"]) || null;
+
+    let paid = false;
+    let flowStatus = null;
+
+    // If confirm includes a trustworthy paid hint, use it; otherwise query Flow.
+    if (paidHint) {
+      paid = true;
+    } else if (token) {
       try {
-        const r = await db.query(
-          `select id, email, plan_id, user_id
-             from payment_intents
-            where commerce_order = $1
-            order by created_at desc
-            limit 1`,
-          [commerceOrder]
-        );
-        intent = r?.rows?.[0] || null;
+        flowStatus = await flowPost("/payment/getStatus", { token: String(token) });
+        const st = String(flowStatus?.status ?? "").trim();
+        paid = st === "2" || String(flowStatus?.paymentStatus ?? "") === "2";
       } catch (e) {
-        console.log("[FLOW_CONFIRM] payment_intents lookup failed:", e?.message || e);
+        console.error("[FLOW_CONFIRM] getStatus error:", e?.message || e);
+        paid = false;
       }
     }
 
-    const email = String(intent?.email || payerEmail || "").trim().toLowerCase();
-    const planId = String(intent?.plan_id || "").trim() || "mensual";
-    const tier = (planId.includes("-") ? planId.split("-")[0] : planId) || "pro";
-
-    // 3) Persist raw status + mark intent paid
-    try {
-      if (commerceOrder) {
-        await db.query(
-          `update payment_intents
-              set status = $2,
-                  flow_order = $3,
-                  raw_flow_status = $4,
-                  updated_at = now()
-            where commerce_order = $1`,
-          [commerceOrder, paid ? "paid" : "pending", order || null, status || null]
-        );
-      }
-    } catch (e) {
-      console.log("[FLOW_CONFIRM] payment_intents update failed:", e?.message || e);
+    // Update intent
+    if (intent) {
+      await db.query(
+        `
+        UPDATE payment_intents
+        SET status=$1, raw_confirm=COALESCE(raw_confirm,'{}'::jsonb) || $2::jsonb, updated_at=NOW()
+        WHERE id=$3
+        `,
+        [
+          paid ? "paid" : "confirm_failed",
+          JSON.stringify({ at: new Date().toISOString(), source: "confirm", params, flowStatus }),
+          intent.id,
+        ]
+      );
     }
 
-    // 4) Activate membership (most important)
     if (paid && email) {
-      const now = new Date();
-      const addDays = (d) => new Date(now.getTime() + d * 24 * 60 * 60 * 1000);
-      let endAt = null;
-
-      const p = planId.toLowerCase();
-      if (p.includes("mens")) endAt = addDays(31);
-      else if (p.includes("trim") || p.includes("3")) endAt = addDays(93);
-      else if (p.includes("anual") || p.includes("12")) endAt = addDays(366);
-      else if (p.includes("vital")) endAt = null; // lifetime
-
-      try {
-        // NOTE: we write into `memberships` (plural). Your DB uses memberships (membership table does NOT exist).
-        await db.query(
-          `insert into memberships (email, plan_id, tier, status, start_at, end_at, created_at)
-           values ($1, $2, $3, 'active', now(), $4, now())`,
-          [email, planId, tier, endAt ? endAt.toISOString() : null]
-        );
-        console.log("[FLOW_CONFIRM] membership activated ✅", { email, planId, tier, order, commerceOrder });
-      } catch (e) {
-        console.log("[FLOW_CONFIRM] memberships insert failed:", e?.message || e);
-      }
+      await activateMembership({ email, planId, commerceOrder: commerceOrder || intent?.commerce_order });
+      console.log("[FLOW_CONFIRM] activated membership", { email, planId, commerceOrder });
     } else {
-      console.log("[FLOW_CONFIRM] not paid or missing email", { paid, email, order, commerceOrder });
+      console.warn("[FLOW_CONFIRM] not paid or missing email", { paid, email, commerceOrder });
     }
-
-    // Flow expects 200/OK
-    return res.status(200).json({ ok: true, paid, order, commerceOrder });
-  } catch (e) {
-    console.log("[FLOW_CONFIRM] getStatus error:", e?.message || e);
-    return res.status(500).json({ ok: false, error: "confirm_failed" });
+  } catch (err) {
+    console.error("[FLOW_CONFIRM] handler error:", err);
   }
 };

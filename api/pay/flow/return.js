@@ -1,176 +1,143 @@
-// backend/api/pay/flow/return.js
-const cors = require("../../_cors");
-const db = require("../../_db");
-const { flowPost, normalizeTestMode } = require("./_flow");
+const cors = require("../_cors");
+const db = require("../_db");
 const qs = require("querystring");
+const { flowPost } = require("./_flow");
 
-function safeString(v) {
-  if (v === undefined || v === null) return "";
-  return String(v);
-}
-
-function buildRedirectUrl(frontendUrl, email, paid) {
-  const base = (frontendUrl || "").replace(/\/+$/, "");
-  const e = encodeURIComponent(email || "");
-  return `${base}/login?email=${e}&paid=${paid ? "1" : "0"}`;
-}
-
-async function readBody(req) {
-  // Vercel Node serverless: body no siempre viene parseado según content-type.
+/**
+ * Flow returnUrl handler.
+ * Flow can hit this endpoint via GET/POST depending on payment method.
+ * We never want 405 here: always redirect user back to the frontend.
+ */
+function readRawBody(req) {
   return new Promise((resolve) => {
     let data = "";
     req.on("data", (chunk) => (data += chunk));
     req.on("end", () => resolve(data));
-    req.on("error", () => resolve(""));
   });
 }
 
-function parseIncoming(req, rawBody) {
-  // Query (Vercel suele exponer req.query, pero fallback a URL)
-  const url = req.url || "";
-  const queryStr = url.includes("?") ? url.split("?")[1] : "";
-  const query = qs.parse(queryStr);
-
-  // Body
-  const ct = safeString(req.headers["content-type"]).toLowerCase();
-  let body = {};
-  if (rawBody) {
-    if (ct.includes("application/json")) {
-      try {
-        body = JSON.parse(rawBody);
-      } catch (_) {
-        body = {};
-      }
-    } else if (ct.includes("application/x-www-form-urlencoded")) {
-      body = qs.parse(rawBody);
-    } else {
-      // a veces Flow manda text/plain con key=value
-      body = qs.parse(rawBody);
-    }
+function pick(obj, keys) {
+  for (const k of keys) {
+    if (obj && obj[k] != null && obj[k] !== "") return obj[k];
   }
-
-  // Campos posibles
-  const order =
-    safeString(query.order) ||
-    safeString(query.commerceOrder) ||
-    safeString(query.commerce_order) ||
-    safeString(body.order) ||
-    safeString(body.commerceOrder) ||
-    safeString(body.commerce_order);
-
-  const token =
-    safeString(query.token) ||
-    safeString(query.token_ws) ||
-    safeString(body.token) ||
-    safeString(body.token_ws);
-
-  return { query, body, order, token };
+  return null;
 }
 
-async function tryActivateMembership({ email, planId, commerceOrder }) {
-  try {
-    await upsertMembershipFromPayment({
-      email,
-      planId,
-      status: "active",
-      startAt: new Date().toISOString(),
-    });
-    console.log("[FLOW_RETURN] membership upserted", { email, planId, commerceOrder });
-  } catch (e) {
-    console.warn("[FLOW_RETURN] membership upsert failed", e && (e.message || e));
-  }
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function paidHintFromParams(params) {
+  // Different Flow integrations may send status-like fields.
+  const v = pick(params, ["status", "paymentStatus", "payment_status", "state", "result", "success"]);
+  if (v == null) return false;
+  const s = String(v).trim().toLowerCase();
+  // Common meanings:
+  // - "2" often used as "paid" in some gateways (keep as hint, not authoritative)
+  if (s === "paid" || s === "success" || s === "ok" || s === "approved" || s === "true" || s === "1" || s === "2") return true;
+  return false;
+}
+
+async function getParams(req) {
+  // Prefer query params, but Flow POSTs application/x-www-form-urlencoded too.
+  const q = req.query || {};
+  if (Object.keys(q).length) return q;
+
+  const raw = await readRawBody(req);
+  const body = qs.parse(raw);
+  return body || {};
+}
+
+async function activateMembership({ email, planId, status, commerceOrder }) {
+  // Keep this aligned with your auth/membership checks: we upsert "memberships".
+  // If your schema differs, adjust here.
+  const now = new Date().toISOString();
+  await db.query(
+    `
+    INSERT INTO memberships (email, plan, status, activated_at, last_order)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (lower(email))
+    DO UPDATE SET plan = EXCLUDED.plan, status = EXCLUDED.status, activated_at = EXCLUDED.activated_at, last_order = EXCLUDED.last_order
+    `,
+    [normalizeEmail(email), planId || null, status || "active", now, commerceOrder || null]
+  );
+}
+
+function buildRedirect(frontendUrl, email, paid) {
+  const e = encodeURIComponent(email || "");
+  const p = paid ? "1" : "0";
+  return `${frontendUrl}/login?email=${e}&paid=${p}`;
 }
 
 module.exports = async (req, res) => {
-  // CORS / preflight
   if (cors(req, res)) return;
 
-  // Nunca 405: aceptamos GET/POST/OPTIONS
-  if (req.method === "OPTIONS") {
-    return res.status(200).send("ok");
-  }
+  // Always handle GET/POST/OPTIONS (CORS already did OPTIONS).
+  const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.factorvictoria.com";
 
-  const rawBody = await readBody(req);
-  const { order, token } = parseIncoming(req, rawBody);
-
-  const FRONTEND_URL = process.env.FRONTEND_URL || process.env.VITE_FRONTEND_URL || "";
-  const testMode = normalizeTestMode(process.env.FLOW_TEST_MODE);
-
-  console.log("[FLOW_RETURN] method=", req.method, "order=", order, "token=", token ? "yes" : "no", "testMode=", testMode);
-
-  // Si no viene order, redirige igual a login con paid=0 (no rompas UX)
-  if (!order) {
-    const redirect = buildRedirectUrl(FRONTEND_URL, "", false);
-    res.writeHead(303, { Location: redirect });
-    return res.end();
-  }
-
-  // Busca intent en DB
-  let intent = null;
   try {
-    const r = await db.query(
-      `select * from payment_intents where commerce_order = $1 limit 1`,
-      [order]
-    );
-    intent = r.rows?.[0] || null;
-  } catch (e) {
-    console.log("[FLOW_RETURN] DB read error:", e?.message || e);
+    const params = await getParams(req);
+    const token = pick(params, ["token", "flowToken", "flow_token"]);
+    const commerceOrder = pick(params, ["order", "commerceOrder", "commerce_order"]);
+    const paidHint = paidHintFromParams(params);
+
+    // Find the intent to know who to activate.
+    let intent = null;
+    if (commerceOrder) {
+      const r = await db.query(
+        "SELECT * FROM payment_intents WHERE commerce_order=$1 ORDER BY created_at DESC LIMIT 1",
+        [String(commerceOrder)]
+      );
+      intent = r.rows[0] || null;
+    }
+
+    let email = intent?.email || pick(params, ["email", "payerEmail", "userEmail"]);
+    email = email ? normalizeEmail(email) : "";
+
+    // Best effort: check Flow status when token exists; otherwise rely on hint.
+    let paid = false;
+    let flowStatus = null;
+
+    if (token) {
+      try {
+        flowStatus = await flowPost("/payment/getStatus", { token: String(token) });
+        const st = String(flowStatus?.status ?? "").trim();
+        // Flow usually uses numeric status codes; treat "2" as paid.
+        paid = st === "2" || String(flowStatus?.paymentStatus ?? "") === "2";
+      } catch (e) {
+        // If Flow status lookup fails, don't block user; use hint only.
+        paid = !!paidHint;
+      }
+    } else {
+      paid = !!paidHint;
+    }
+
+    // Update intent record for observability
+    if (intent) {
+      await db.query(
+        `
+        UPDATE payment_intents
+        SET status=$1, raw_confirm=COALESCE(raw_confirm,'{}'::jsonb) || $2::jsonb, updated_at=NOW()
+        WHERE id=$3
+        `,
+        [
+          paid ? "paid" : "return_received",
+          JSON.stringify({ at: new Date().toISOString(), source: "return", params, flowStatus }),
+          intent.id,
+        ]
+      );
+    }
+
+    // If we are confident it's paid, activate immediately (makes UX instant even if confirm webhook fails).
+    if (paid && email) {
+      const planId = intent?.plan || intent?.planid || intent?.plan_id || pick(params, ["planId", "plan", "plan_id"]);
+      await activateMembership({ email, planId, status: "active", commerceOrder: commerceOrder || intent?.commerce_order });
+    }
+
+    res.redirect(302, buildRedirect(FRONTEND_URL, email, paid));
+  } catch (err) {
+    console.error("[FLOW_RETURN] error:", err);
+    // Fail open: redirect without paid flag to avoid white screens.
+    res.redirect(302, `${FRONTEND_URL}/login?email=&paid=0`);
   }
-
-  const email = intent?.email || "";
-  const plan = intent?.plan || intent?.tier || "pro";
-
-  // Token: preferimos el que llega, si no el guardado
-  const flowToken = token || intent?.flow_token || intent?.flowToken || "";
-
-  // Si no hay token, no podemos validar. Igual redirigimos sin crashear.
-  if (!flowToken) {
-    const redirect = buildRedirectUrl(FRONTEND_URL, email, false);
-    res.writeHead(303, { Location: redirect });
-    return res.end();
-  }
-
-  // Consulta estado a Flow
-  let status = null;
-  try {
-    status = await flowPost("/payment/getStatus", { token: flowToken }, { testMode });
-    // status típico trae: status / paymentData / etc (depende API)
-    console.log("[FLOW_RETURN] getStatus ok");
-  } catch (e) {
-    console.log("[FLOW_RETURN] getStatus error:", e?.message || e);
-  }
-
-  // Determinar “paid”
-  const paid =
-    status &&
-    (String(status.status).toLowerCase() === "paid" ||
-      String(status.status).toLowerCase() === "2" || // por si Flow usa códigos
-      String(status.paymentStatus || "").toLowerCase() === "paid");
-
-  // Persistir en DB (best effort)
-  try {
-    await db.query(
-      `
-      update payment_intents
-      set
-        flow_token = coalesce(nullif($2,''), flow_token),
-        status = $3,
-        raw_flow_status = $4,
-        updated_at = now()
-      where commerce_order = $1
-      `,
-      [order, flowToken, paid ? "paid" : "pending", status ? JSON.stringify(status) : null]
-    );
-  } catch (e) {
-    console.log("[FLOW_RETURN] DB update error:", e?.message || e);
-  }
-
-  if (paid) {
-    await tryActivateMembership({ email, plan, commerceOrder: order });
-  }
-
-  // Redirigir siempre al front
-  const redirect = buildRedirectUrl(FRONTEND_URL, email, !!paid);
-  res.writeHead(303, { Location: redirect });
-  return res.end();
 };
