@@ -4,14 +4,15 @@ const ALLOWED = new Set([
   "https://factorvictoria.com",
   "http://localhost:5173",
   "http://localhost:3000",
+  "http://localhost:5173",
+  "http://localhost:3001",
 ]);
 
 module.exports = function cors(req, res) {
   const origin = req.headers.origin;
 
-  // Permitir previews de Vercel del frontend (si los usas)
-  const isVercelPreview =
-    origin && /^https:\/\/.*\.vercel\.app$/.test(origin);
+  // Allow Vercel preview deployments of the frontend if used
+  const isVercelPreview = origin && /^https:\/\/.*\.vercel\.app$/.test(origin);
 
   if (origin && (ALLOWED.has(origin) || isVercelPreview)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -30,6 +31,5 @@ module.exports = function cors(req, res) {
     res.end();
     return true;
   }
-
   return false;
 };
