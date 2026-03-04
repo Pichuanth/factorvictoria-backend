@@ -1,17 +1,21 @@
-// backend/api/auth/login.js
 const cors = require("../_cors");
 const db = require("../_db");
 const { hasPassword, verifyPassword } = require("../_activation");
 
-// POST /api/auth/login { email, password }
+// POST /api/auth/login  body: { email, password? }
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method not allowed" });
 
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
+  }
+
+  // Body puede venir como string (Vercel) o como objeto.
   let body = {};
   try {
-    body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-  } catch {
+    if (typeof req.body === "string") body = JSON.parse(req.body || "{}");
+    else if (req.body && typeof req.body === "object") body = req.body;
+  } catch (_) {
     body = {};
   }
 
@@ -21,7 +25,7 @@ module.exports = async (req, res) => {
   if (!email) return res.status(400).json({ ok: false, error: "email_required" });
 
   try {
-    // Get latest membership by email
+    // Última membresía por email (case-insensitive)
     const q = `
       SELECT email, tier, plan_id AS "planId", status, start_at AS "startAt", end_at AS "endAt"
       FROM memberships
@@ -34,23 +38,37 @@ module.exports = async (req, res) => {
 
     const now = new Date();
     const endAt = m?.endAt ? new Date(m.endAt) : null;
-    const active = !!m && (
-      String(m.status || "").toLowerCase() === "active" ||
-      String(m.status || "").toLowerCase() === "paid"
-    ) && (!endAt || endAt.getTime() > now.getTime());
 
-    if (!active) return res.status(403).json({ ok: false, error: "membership_inactive" });
+    const status = String(m?.status || "").toLowerCase();
+    const active =
+      !!m &&
+      (status === "active" || status === "paid") &&
+      (!endAt || endAt > now);
 
-    const needPw = await hasPassword(email);
-    if (needPw) {
-      if (!password) return res.status(401).json({ ok: false, error: "password_required" });
-      const v = await verifyPassword(email, password);
-      if (!v.ok) return res.status(401).json({ ok: false, error: "invalid_password" });
+    if (!active) {
+      return res.status(403).json({ ok: false, error: "membership_inactive" });
     }
 
-    return res.json({ ok: true, active: true, membership: m });
-  } catch (e) {
-    console.log("[AUTH_LOGIN] error", e);
-    return res.status(500).json({ ok: false, error: "server_error" });
+    // Si el usuario tiene contraseña seteada, la pedimos y validamos
+    if (await hasPassword(email)) {
+      if (!password) return res.status(401).json({ ok: false, error: "password_required" });
+      const okPass = await verifyPassword(email, password);
+      if (!okPass) return res.status(401).json({ ok: false, error: "invalid_password" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      email,
+      active: true,
+      tier: m?.tier ?? null,
+      planId: m?.planId ?? null,
+      membership: m,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      error: "login_failed",
+      detail: String(err?.message || err),
+    });
   }
 };

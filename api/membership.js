@@ -1,46 +1,122 @@
-// backend/api/membership.js
 const cors = require("./_cors");
 const db = require("./_db");
+const qs = require("querystring");
 
-// GET /api/membership?email=...
+// GET  /api/membership?email=...
+// POST /api/membership  body: { email, action: "cancel" }  -> cancel_at_period_end=true
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-  if (req.method !== "GET") return res.status(405).json({ ok: false, error: "Method not allowed" });
-
-  const email = String((req.query && req.query.email) || "").trim().toLowerCase();
-  if (!email) return res.status(400).json({ ok: false, error: "email_required" });
 
   try {
-    const q = `
-      SELECT email, tier, plan_id AS "planId", status, start_at AS "startAt", end_at AS "endAt"
-      FROM memberships
-      WHERE lower(email) = lower($1)
-      ORDER BY start_at DESC NULLS LAST
-      LIMIT 1
-    `;
-    const { rows } = await db.query(q, [email]);
-    const m = rows?.[0] || null;
+    // DEBUG marker (?marker=1)
+    const rawUrlForMarker = req.url || "";
+    const markerIdx = rawUrlForMarker.indexOf("?");
+    const markerQs = markerIdx >= 0 ? rawUrlForMarker.slice(markerIdx + 1) : "";
+    const markerParsed = qs.parse(markerQs);
+    const markerOn =
+      (req.query && String(req.query.marker || "") === "1") ||
+      (markerParsed && String(markerParsed.marker || "") === "1");
 
-    const now = new Date();
-    const endAt = m?.endAt ? new Date(m.endAt) : null;
-    const active = !!m && (
-      String(m.status || "").toLowerCase() === "active" ||
-      String(m.status || "").toLowerCase() === "paid"
-    ) && (!endAt || endAt.getTime() > now.getTime());
+    if (markerOn) {
+      return res.status(200).json({
+        ok: true,
+        marker: "membership-v4-2026-03-03",
+        url: req.url || null,
+        method: req.method,
+        query: req.query ?? null,
+      });
+    }
 
-    return res.json({
+    function isActive(m) {
+      if (!m) return false;
+      const status = String(m.status || "").toLowerCase();
+      const endAt = m.end_at ? new Date(m.end_at) : null;
+      return (status === "active" || status === "paid") && (!endAt || endAt > new Date());
+    }
+
+    // --- POST: cancelar al final del periodo ---
+    if (req.method === "POST") {
+      let body = {};
+      try {
+        if (typeof req.body === "string") body = JSON.parse(req.body || "{}");
+        else if (req.body && typeof req.body === "object") body = req.body;
+      } catch (_) {
+        body = {};
+      }
+
+      const email = String(body.email || "").trim().toLowerCase();
+      const action = String(body.action || "").trim().toLowerCase();
+
+      if (!email) return res.status(400).json({ error: "email requerido" });
+      if (action !== "cancel") return res.status(400).json({ error: "acción inválida" });
+
+      const upd = await db.query(
+        `update memberships
+         set cancel_at_period_end = true
+         where lower(email) = $1
+         returning email, plan_id, tier, status, start_at, end_at, cancel_at_period_end`,
+        [email]
+      );
+
+      const m = upd.rows?.[0] || null;
+      return res.status(200).json({
+        ok: true,
+        email,
+        active: isActive(m),
+        tier: m?.tier ?? null,
+        planId: m?.plan_id ?? null,
+        status: m?.status ?? null,
+        startAt: m?.start_at ?? null,
+        endAt: m?.end_at ?? null,
+        membership: m,
+      });
+    }
+
+    // --- GET ---
+    if (req.method !== "GET") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    let email = (req.query && req.query.email) ? String(req.query.email) : null;
+
+    if (!email) {
+      const rawUrl = req.url || "";
+      const idx = rawUrl.indexOf("?");
+      const queryStr = idx >= 0 ? rawUrl.slice(idx + 1) : "";
+      const parsed = qs.parse(queryStr);
+      if (parsed && parsed.email) email = String(parsed.email);
+    }
+
+    if (!email) return res.status(400).json({ error: "email requerido" });
+
+    email = String(email).trim().toLowerCase();
+
+    const r = await db.query(
+      `select email, plan_id, tier, status, start_at, end_at, cancel_at_period_end
+       from memberships
+       where lower(email) = $1
+       order by start_at desc nulls last
+       limit 1`,
+      [email]
+    );
+
+    const m = r.rows && r.rows.length ? r.rows[0] : null;
+
+    return res.status(200).json({
       ok: true,
       email,
+      active: isActive(m),
+      tier: m?.tier ?? null,
+      planId: m?.plan_id ?? null,
+      status: m?.status ?? null,
+      startAt: m?.start_at ?? null,
+      endAt: m?.end_at ?? null,
       membership: m,
-      active,
-      tier: m?.tier || null,
-      planId: m?.planId || null,
-      status: m?.status || null,
-      startAt: m?.startAt || null,
-      endAt: m?.endAt || null,
     });
-  } catch (e) {
-    console.log("[MEMBERSHIP] error", e);
-    return res.status(500).json({ ok: false, error: "server_error" });
+  } catch (err) {
+    return res.status(500).json({
+      error: "membership_failed",
+      detail: String(err?.message || err),
+    });
   }
 };
