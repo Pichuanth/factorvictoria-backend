@@ -25,7 +25,7 @@ module.exports = {
   },
   vitalicio: {
     label: "Leyenda (Vitalicio)",
-    amount: 1200,
+    amount: 249990,
     currency: "CLP",
     days: null,      // vitalicio real => end_at NULL
     tier: "leyenda", // x100
