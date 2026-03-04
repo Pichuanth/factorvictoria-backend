@@ -48,10 +48,28 @@ module.exports = async (req, res) => {
     } catch (e) {
       // ignore if table/constraint differs
     }
+    // Try to confirm immediately so user lands with paid=1 when possible
+    let paid = 0;
+    let email = "";
+    try {
+      const base = `https://${req.headers.host}`;
+      const resp = await fetch(`${base}/api/pay/flow/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `token=${encodeURIComponent(token)}`,
+      });
+      const data = await resp.json().catch(() => null);
+      if (data && data.ok) {
+        paid = 1;
+        email = data.email || "";
+      }
+    } catch (e) {
+      // ignore: user can retry login, membership will activate on confirm/notify
+    }
 
-    // Redirect user to frontend login with paid=0 (wait confirm) - keep email placeholder on FE
     const FRONTEND_URL = process.env.FRONTEND_URL || "https://www.factorvictoria.com";
-    return res.redirect(302, `${FRONTEND_URL}/login?email=&paid=0`);
+    return res.redirect(302, `${FRONTEND_URL}/login?email=${encodeURIComponent(email)}&paid=${paid}`);
+
   } catch (err) {
     console.error("[FLOW_RETURN] error", err);
     return res.status(200).send("ok"); // never break Flow redirect

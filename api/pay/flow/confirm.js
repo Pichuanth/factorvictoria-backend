@@ -34,7 +34,7 @@ module.exports = async (req, res) => {
 
     // 1) Ask Flow for status (retry-friendly)
     const testMode = String(process.env.FLOW_TEST_MODE || "").toLowerCase() === "true";
-    const statusResp = await flow.getStatus({ token, testMode });
+    const statusResp = await flow.flowPost("/payment/getStatus", { token }, { testMode });
 
     // Flow response shape depends on API; we try common flags
     const status = (statusResp && (statusResp.status || statusResp.paymentStatus || statusResp.state)) || null;
