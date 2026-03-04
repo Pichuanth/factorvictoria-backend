@@ -89,6 +89,17 @@ module.exports = async (req, res) => {
       pro: 365,
     };
 
+const planTier = {
+  mensual: 'basic',      // x10
+  trimestral: 'goleador',// x20
+  anual: 'campeon',      // x50
+  vitalicio: 'leyenda',  // x100
+  pro: 'campeon',
+};
+
+const tier = planTier[planId] || null;
+
+
     const days = planDays[planId] ?? 30;
 
     // Create table if missing (safe)
@@ -103,30 +114,34 @@ module.exports = async (req, res) => {
       )
     `);
 
+    await db.query(`alter table memberships add column if not exists tier text`);
+
     if (days) {
       await db.query(
-        `insert into memberships (email, plan_id, status, start_at, end_at, updated_at)
-         values (lower($1), $2, 'active', now(), now() + make_interval(days => $3::int), now())
+        `insert into memberships (email, plan_id, tier, status, start_at, end_at, updated_at)
+         values (lower($1), $2, $3, 'active', now(), now() + make_interval(days => $3::int), now())
          on conflict (email) do update
            set plan_id=excluded.plan_id,
+               tier=excluded.tier,
                status='active',
                start_at=now(),
                end_at=now() + make_interval(days => $3::int),
                updated_at=now()`,
-        [email, planId, days]
+        [email, planId, tier, days]
       );
     } else {
       // vitalicio
       await db.query(
-        `insert into memberships (email, plan_id, status, start_at, end_at, updated_at)
-         values (lower($1), $2, 'active', now(), NULL, now())
+        `insert into memberships (email, plan_id, tier, status, start_at, end_at, updated_at)
+         values (lower($1), $2, $3, 'active', now(), NULL, now())
          on conflict (email) do update
            set plan_id=excluded.plan_id,
+               tier=excluded.tier,
                status='active',
                start_at=now(),
                end_at=NULL,
                updated_at=now()`,
-        [email, planId]
+        [email, planId, tier]
       );
     }
 
