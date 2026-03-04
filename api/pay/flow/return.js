@@ -60,7 +60,7 @@ module.exports = async (req, res) => {
       });
       const data = await resp.json().catch(() => null);
       if (data && data.ok) {
-        paid = data.paid ? 1 : 0;
+        paid = 1;
         email = data.email || "";
       }
     } catch (e) {
