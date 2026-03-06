@@ -1,14 +1,17 @@
 const cors = require("../../_cors");
-
 const { MercadoPagoConfig, Preference } = require("mercadopago");
 
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
     const accessToken = process.env.MP_ACCESS_TOKEN;
-    if (!accessToken) return res.status(500).json({ error: "MP_ACCESS_TOKEN missing" });
+    if (!accessToken) {
+      return res.status(500).json({ error: "MP_ACCESS_TOKEN missing" });
+    }
 
     const client = new MercadoPagoConfig({ accessToken });
     const preference = new Preference(client);
@@ -21,27 +24,36 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "Missing email/plan" });
     }
 
-    // IDs reales de plan según backend/api/_plans.js
+    // Temporal para pruebas reales de MP.
+    // OJO: aquí estaba hardcodeado 1000, por eso cambiar _plans.js no movía el checkout.
     const prices = {
-      mensual: 1000,
+      mensual: 5000,
       trimestral: 44990,
       anual: 99990,
       vitalicio: 249990,
     };
 
-    if (!prices[finalPlan]) return res.status(400).json({ error: "Invalid plan" });
+    const titles = {
+      mensual: "Inicio (Mensual)",
+      trimestral: "Goleador",
+      anual: "Campeón",
+      vitalicio: "Leyenda",
+    };
 
-    // URLs (ajusta si tu frontend/back cambian)
+    if (!prices[finalPlan]) {
+      return res.status(400).json({ error: "Invalid plan" });
+    }
+
     const FRONT = (process.env.FRONT_URL || "https://factorvictoria.com").replace(/\/$/, "");
     const BACK = (process.env.BACK_URL || "https://factorvictoria-backend.vercel.app").replace(/\/$/, "");
 
     const prefBody = {
       items: [
         {
-          title: "Factor Victoria - " + finalPlan,
+          title: `Factor Victoria - ${titles[finalPlan] || finalPlan}`,
           quantity: 1,
           currency_id: "CLP",
-          unit_price: prices[finalPlan],
+          unit_price: Number(prices[finalPlan]),
         },
       ],
 
@@ -49,7 +61,6 @@ module.exports = async (req, res) => {
         email: finalEmail,
       },
 
-      // Metadata para reconocer al usuario en el webhook
       metadata: {
         email: finalEmail,
         planId: finalPlan,
@@ -62,10 +73,11 @@ module.exports = async (req, res) => {
         pending: `${FRONT}/login?mp=pending`,
         failure: `${FRONT}/login?mp=failure`,
       },
-      auto_return: "approved",
 
-      // Webhook
+      auto_return: "approved",
+      binary_mode: true,
       notification_url: `${BACK}/api/pay/mercadopago/webhook`,
+      statement_descriptor: "FACTOR VICTORIA",
     };
 
     const result = await preference.create({ body: prefBody });
@@ -75,6 +87,11 @@ module.exports = async (req, res) => {
       id: result.id,
       init_point: result.init_point,
       sandbox_init_point: result.sandbox_init_point || null,
+      debug: {
+        email: finalEmail,
+        planId: finalPlan,
+        amount: prices[finalPlan],
+      },
     });
   } catch (e) {
     console.error("MP create error", {
@@ -82,6 +99,10 @@ module.exports = async (req, res) => {
       cause: e?.cause,
       stack: e?.stack,
     });
-    return res.status(500).json({ error: "MP create failed" });
+    return res.status(500).json({
+      error: "MP create failed",
+      message: e?.message || null,
+      cause: e?.cause || null,
+    });
   }
 };
