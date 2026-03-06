@@ -1,5 +1,7 @@
 const cors = require("../../_cors");
 const db = require("../../_db");
+const { Resend } = require("resend");
+const { createActivationToken } = require("../../_activation");
 const { MercadoPagoConfig, Payment, MerchantOrder } = require("mercadopago");
 
 function planToTier(planId) {
@@ -33,8 +35,109 @@ function getResourceId(req) {
     const m = resource.match(/\/(\d+)(?:\?|$)/);
     if (m?.[1]) return m[1];
   }
-
   return null;
+}
+
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function resolvePaymentFromMerchantOrder(merchantOrderApi, paymentApi, resourceId) {
+  let lastOrder = null;
+
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const order = await merchantOrderApi.get({ merchantOrderId: Number(resourceId) });
+    const ord = order?.response || order;
+    lastOrder = ord;
+    const payments = Array.isArray(ord?.payments) ? ord.payments : [];
+
+    console.log("MP merchant_order fetched", {
+      attempt,
+      id: ord?.id,
+      order_status: ord?.order_status,
+      paid_amount: ord?.paid_amount,
+      total_amount: ord?.total_amount,
+      external_reference: ord?.external_reference,
+      preference_id: ord?.preference_id,
+      payments,
+    });
+
+    const approvedOrAny = payments.find((p) => p?.status === "approved") || payments[0];
+    if (approvedOrAny?.id) {
+      const payment = await paymentApi.get({ id: Number(approvedOrAny.id) });
+      return { payment, order: ord };
+    }
+
+    if (attempt < 4) await sleep(1200);
+  }
+
+  console.log("MP merchant_order without payments", {
+    merchantOrderId: resourceId,
+    order_status: lastOrder?.order_status,
+    paid_amount: lastOrder?.paid_amount,
+    total_amount: lastOrder?.total_amount,
+    external_reference: lastOrder?.external_reference,
+  });
+
+  return { payment: null, order: lastOrder };
+}
+
+async function sendActivationEmail(email) {
+  const resendKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM || process.env.EMAIL_FROM;
+  const frontendUrl = (process.env.FRONTEND_URL || "https://www.factorvictoria.com").replace(/\/+$/, "");
+
+  if (!resendKey || !from || !email) {
+    console.log("MP activation email skipped", {
+      email,
+      reason: !email ? "missing_email" : !resendKey ? "missing_resend_key" : "missing_resend_from",
+    });
+    return;
+  }
+
+  try {
+    const token = await createActivationToken(email);
+    const link = `${frontendUrl}/set-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+    const resend = new Resend(resendKey);
+
+    const result = await resend.emails.send({
+      from,
+      to: email,
+      subject: "Activa tu acceso - Factor Victoria",
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#111">
+          <h2 style="margin-bottom:16px">Pago confirmado ✅</h2>
+          <p style="font-size:15px;line-height:1.6">
+            Tu membresía ya está activa. Para crear tu contraseña y dejar tu acceso listo,
+            haz clic en el siguiente botón:
+          </p>
+          <p style="margin:24px 0">
+            <a href="${link}" style="background:#0ea5e9;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block;font-weight:700">
+              Crear contraseña
+            </a>
+          </p>
+          <p style="font-size:14px;line-height:1.6">Si el botón no abre, copia y pega este link en tu navegador:</p>
+          <p style="font-size:13px;word-break:break-all;color:#444">${link}</p>
+          <p style="font-size:14px;color:#666;margin-top:20px">Este link expira en 24 horas. Si no fuiste tú, ignora este correo.</p>
+        </div>
+      `,
+    });
+
+    console.log("MP activation email sent", {
+      email,
+      from,
+      id: result?.data?.id || result?.id || null,
+      error: result?.error || null,
+    });
+  } catch (err) {
+    console.log("MP activation email error", {
+      email,
+      from,
+      message: err?.message || String(err),
+      status: err?.status,
+      error: err?.error,
+    });
+  }
 }
 
 module.exports = async (req, res) => {
@@ -73,34 +176,11 @@ module.exports = async (req, res) => {
     if (topic === "payment") {
       payment = await paymentApi.get({ id: Number(resourceId) });
     } else if (topic === "merchant_order") {
-      const order = await merchantOrderApi.get({ merchantOrderId: Number(resourceId) });
-      const ord = order?.response || order;
-      const payments = Array.isArray(ord?.payments) ? ord.payments : [];
-
-      console.log("MP merchant_order fetched", {
-        id: ord?.id,
-        order_status: ord?.order_status,
-        paid_amount: ord?.paid_amount,
-        total_amount: ord?.total_amount,
-        external_reference: ord?.external_reference,
-        preference_id: ord?.preference_id,
-        payments,
-      });
-
-      const approvedOrAny = payments.find((p) => p?.status === "approved") || payments[0];
-
-      if (!approvedOrAny?.id) {
-        console.log("MP merchant_order without payments", {
-          merchantOrderId: resourceId,
-          order_status: ord?.order_status,
-          paid_amount: ord?.paid_amount,
-          total_amount: ord?.total_amount,
-          external_reference: ord?.external_reference,
-        });
+      const resolved = await resolvePaymentFromMerchantOrder(merchantOrderApi, paymentApi, resourceId);
+      payment = resolved.payment;
+      if (!payment) {
         return res.status(200).send("merchant_order without payment");
       }
-
-      payment = await paymentApi.get({ id: Number(approvedOrAny.id) });
     } else {
       return res.status(200).send("ignored");
     }
@@ -111,7 +191,6 @@ module.exports = async (req, res) => {
       id: pay?.id,
       status: pay?.status,
       status_detail: pay?.status_detail,
-      transaction_amount: pay?.transaction_amount,
       external_reference: pay?.external_reference,
       metadata: pay?.metadata,
       payer_email: pay?.payer?.email,
@@ -144,9 +223,7 @@ module.exports = async (req, res) => {
     const tier = planToTier(planId);
     const days = planDays(planId);
 
-    if (!tier) {
-      return res.status(200).send("invalid-plan");
-    }
+    if (!tier) return res.status(200).send("invalid-plan");
 
     if (days === null) {
       await db.query(
@@ -188,6 +265,8 @@ module.exports = async (req, res) => {
       tier,
       paymentId: pay?.id,
     });
+
+    await sendActivationEmail(email);
 
     return res.status(200).send("ok");
   } catch (err) {
