@@ -1,42 +1,36 @@
 const cors = require("../_cors");
-const db = require("../_db");
-const crypto = require("crypto");
 const { Resend } = require("resend");
+const { createActivationToken, normalizeEmail } = require("../_activation");
 
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
   if (req.method !== "POST") return res.status(200).json({ ok: true });
 
   try {
-    const { email } = req.body || {};
-    if (!email) return res.status(200).json({ ok: true });
+    const email = normalizeEmail(req.body?.email);
+    if (!email) return res.status(200).json({ ok: true, sent: false, reason: "missing_email" });
 
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24); // 24h
+    const token = await createActivationToken(email);
 
-    await db.query(
-      `insert into password_set_tokens (email, token, expires_at)
-       values ($1,$2,$3)`,
-      [email, token, expiresAt.toISOString()]
-    );
-
-    const FRONTEND_URL = (process.env.FRONTEND_URL || "").replace(/\/+$/, "");
-    const link = `${FRONTEND_URL}/set-password?token=${encodeURIComponent(token)}`;
+    const FRONTEND_URL = (process.env.FRONTEND_URL || "https://factorvictoria.com").replace(/\/+$/, "");
+    const link = `${FRONTEND_URL}/set-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
 
     const resendKey = process.env.RESEND_API_KEY;
+    const from = process.env.RESEND_FROM || process.env.EMAIL_FROM;
+
     if (!resendKey) {
-      console.log("[PASSWORD_LINK] missing RESEND_API_KEY");
-      return res.status(200).json({ ok: true, sent: false, reason: "missing_resend_key" });
+      console.log("[PASSWORD_LINK] missing RESEND_API_KEY", { email, link });
+      return res.status(200).json({ ok: true, queued: false, reason: "missing_resend_key" });
+    }
+
+    if (!from) {
+      console.log("[PASSWORD_LINK] missing RESEND_FROM", { email, link });
+      return res.status(200).json({ ok: true, queued: false, reason: "missing_resend_from" });
     }
 
     const resend = new Resend(resendKey);
-    const from = process.env.RESEND_FROM || process.env.EMAIL_FROM || "Factor Victoria <no-reply@factorvictoria.com>";
 
-    console.log("[PASSWORD_LINK] sending", {
-      email,
-      from,
-      link,
-    });
+    console.log("[PASSWORD_LINK] sending", { email, from, link });
 
     const result = await resend.emails.send({
       from,
@@ -72,9 +66,9 @@ module.exports = async (req, res) => {
       error: result?.error || null,
     });
 
-    return res.status(200).json({ ok: true, sent: !result?.error });
+    return res.status(200).json({ ok: true, sent: true });
   } catch (e) {
     console.log("[PASSWORD_LINK] error:", e?.message || e);
-    return res.status(200).json({ ok: true, sent: false, error: e?.message || "unknown_error" });
+    return res.status(200).json({ ok: true });
   }
 };
