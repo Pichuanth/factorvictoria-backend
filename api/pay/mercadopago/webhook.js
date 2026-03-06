@@ -20,6 +20,26 @@ function planDays(planId) {
   return 30;
 }
 
+function getTopic(req) {
+  return (
+    req.query.topic ||
+    req.query.type ||
+    req.body?.topic ||
+    req.body?.type ||
+    ""
+  );
+}
+
+function getResourceId(req) {
+  return (
+    req.query["data.id"] ||
+    req.query.id ||
+    req.body?.data?.id ||
+    req.body?.id ||
+    null
+  );
+}
+
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
   if (req.method !== "POST" && req.method !== "GET") {
@@ -36,17 +56,16 @@ module.exports = async (req, res) => {
     const paymentApi = new Payment(client);
     const merchantOrderApi = new MerchantOrder(client);
 
-    const topic =
-      req.query.topic ||
-      req.body?.type ||
-      req.body?.topic ||
-      req.query.type;
+    const topic = getTopic(req);
+    const resourceId = getResourceId(req);
 
-    const resourceId =
-      req.query.id ||
-      req.query["data.id"] ||
-      req.body?.data?.id ||
-      req.body?.id;
+    console.log("MP webhook IN", {
+      method: req.method,
+      query: req.query,
+      body: req.body,
+      topic,
+      resourceId,
+    });
 
     if (!topic || !resourceId) {
       return res.status(200).send("ignored");
@@ -58,11 +77,12 @@ module.exports = async (req, res) => {
       payment = await paymentApi.get({ id: Number(resourceId) });
     } else if (topic === "merchant_order") {
       const order = await merchantOrderApi.get({ merchantOrderId: Number(resourceId) });
-
-      const payments = order?.payments || order?.response?.payments || [];
-      const approvedOrAny = payments.find(p => p.status === "approved") || payments[0];
+      const ord = order?.response || order;
+      const payments = Array.isArray(ord?.payments) ? ord.payments : [];
+      const approvedOrAny = payments.find((p) => p?.status === "approved") || payments[0];
 
       if (!approvedOrAny?.id) {
+        console.log("MP merchant_order without payments", { merchantOrderId: resourceId });
         return res.status(200).send("merchant_order without payment");
       }
 
@@ -73,14 +93,40 @@ module.exports = async (req, res) => {
 
     const pay = payment?.response || payment;
 
+    console.log("MP payment fetched", {
+      id: pay?.id,
+      status: pay?.status,
+      status_detail: pay?.status_detail,
+      external_reference: pay?.external_reference,
+      metadata: pay?.metadata,
+      payer_email: pay?.payer?.email,
+    });
+
     if (!pay || pay.status !== "approved") {
       return res.status(200).send("not-approved");
     }
 
-    const email = String(pay.metadata?.email || pay.payer?.email || "").toLowerCase();
-    const planId = String(pay.metadata?.planId || pay.metadata?.plan || "").toLowerCase();
+    let email = String(pay.metadata?.email || pay.payer?.email || "")
+      .trim()
+      .toLowerCase();
+    let planId = String(pay.metadata?.planId || pay.metadata?.plan || "")
+      .trim()
+      .toLowerCase();
+
+    if ((!email || !planId) && pay.external_reference) {
+      const [extEmail, extPlan] = String(pay.external_reference).split("|");
+      if (!email && extEmail) email = String(extEmail).trim().toLowerCase();
+      if (!planId && extPlan) planId = String(extPlan).trim().toLowerCase();
+    }
 
     if (!email || !planId) {
+      console.log("MP webhook missing email/plan", {
+        paymentId: pay?.id,
+        email,
+        planId,
+        external_reference: pay?.external_reference,
+        metadata: pay?.metadata,
+      });
       return res.status(200).send("missing-email-or-plan");
     }
 
@@ -125,6 +171,13 @@ module.exports = async (req, res) => {
       );
     }
 
+    console.log("MP membership activated", {
+      email,
+      planId,
+      tier,
+      paymentId: pay?.id,
+    });
+
     return res.status(200).send("ok");
   } catch (err) {
     console.error("MP webhook error", {
@@ -132,7 +185,9 @@ module.exports = async (req, res) => {
       error: err.error,
       status: err.status,
       cause: err.cause,
+      stack: err.stack,
     });
-    return res.status(500).send("error");
+
+    return res.status(200).send("error");
   }
 };
