@@ -14,10 +14,11 @@ module.exports = async (req, res) => {
     const preference = new Preference(client);
 
     const { email, plan, planId } = req.body || {};
-const finalPlan = planId || plan;
+    const finalPlan = String(planId || plan || "").toLowerCase();
+    const finalEmail = String(email || "").trim().toLowerCase();
 
-    if (!email || !finalPlan) {
-   return res.status(400).json({ error: "Missing email/plan" });
+    if (!finalEmail || !finalPlan) {
+    return res.status(400).json({ error: "Missing email/plan" });
    }
 
     // IDs reales de plan según backend/api/_plans.js
@@ -46,9 +47,9 @@ const finalPlan = planId || plan;
 
       // Metadata para reconocer al usuario en el webhook
       metadata: {
-      email,
-      planId: finalPlan,
-      },
+     email: finalEmail,
+     planId: finalPlan,
+    },
       back_urls: {
         success: `${FRONT}/login?mp=success`,
         pending: `${FRONT}/login?mp=pending`,
