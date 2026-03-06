@@ -1,5 +1,7 @@
 const cors = require("../../_cors");
 const db = require("../../_db");
+const { Resend } = require("resend");
+const { createActivationToken } = require("../../_activation");
 const { MercadoPagoConfig, Payment, MerchantOrder } = require("mercadopago");
 
 function planToTier(planId) {
@@ -20,21 +22,52 @@ function planDays(planId) {
   return 30;
 }
 
-function getTopic(req) {
-  return req.query.topic || req.query.type || req.body?.topic || req.body?.type || "";
-}
+async function sendActivationEmail(email) {
+  const resendKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM || process.env.EMAIL_FROM;
+  const frontendUrl = (process.env.FRONTEND_URL || "https://factorvictoria.com").replace(/\/+$/, "");
 
-function getResourceId(req) {
-  const direct = req.query["data.id"] || req.query.id || req.body?.data?.id || req.body?.id || null;
-  if (direct) return direct;
-
-  const resource = req.body?.resource;
-  if (typeof resource === "string") {
-    const m = resource.match(/\/(\d+)(?:\?|$)/);
-    if (m?.[1]) return m[1];
+  if (!resendKey || !from) {
+    console.log("MP activation email skipped", {
+      email,
+      reason: !resendKey ? "missing_resend_key" : "missing_resend_from",
+    });
+    return;
   }
 
-  return null;
+  const token = await createActivationToken(email);
+  const link = `${frontendUrl}/set-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+  const resend = new Resend(resendKey);
+
+  const result = await resend.emails.send({
+    from,
+    to: email,
+    subject: "Activa tu acceso - Factor Victoria",
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#111">
+        <h2 style="margin-bottom:16px">Pago confirmado ✅</h2>
+        <p style="font-size:15px;line-height:1.6">
+          Tu membresía ya está activa. Para crear tu contraseña y dejar tu acceso listo,
+          haz clic en el siguiente botón:
+        </p>
+        <p style="margin:24px 0">
+          <a href="${link}" style="background:#0ea5e9;color:#fff;text-decoration:none;padding:12px 18px;border-radius:8px;display:inline-block;font-weight:700">
+            Crear contraseña
+          </a>
+        </p>
+        <p style="font-size:14px;line-height:1.6">Si el botón no abre, copia y pega este link en tu navegador:</p>
+        <p style="font-size:13px;word-break:break-all;color:#444">${link}</p>
+        <p style="font-size:14px;color:#666;margin-top:20px">Este link expira en 24 horas. Si no fuiste tú, ignora este correo.</p>
+      </div>
+    `,
+  });
+
+  console.log("MP activation email sent", {
+    email,
+    from,
+    id: result?.data?.id || result?.id || null,
+    error: result?.error || null,
+  });
 }
 
 module.exports = async (req, res) => {
@@ -53,16 +86,8 @@ module.exports = async (req, res) => {
     const paymentApi = new Payment(client);
     const merchantOrderApi = new MerchantOrder(client);
 
-    const topic = getTopic(req);
-    const resourceId = getResourceId(req);
-
-    console.log("MP webhook IN", {
-      method: req.method,
-      query: req.query,
-      body: req.body,
-      topic,
-      resourceId,
-    });
+    const topic = req.query.topic || req.body?.type || req.body?.topic || req.query.type;
+    const resourceId = req.query.id || req.query["data.id"] || req.body?.data?.id || req.body?.id;
 
     if (!topic || !resourceId) {
       return res.status(200).send("ignored");
@@ -75,27 +100,13 @@ module.exports = async (req, res) => {
     } else if (topic === "merchant_order") {
       const order = await merchantOrderApi.get({ merchantOrderId: Number(resourceId) });
       const ord = order?.response || order;
-      const payments = Array.isArray(ord?.payments) ? ord.payments : [];
-
-      console.log("MP merchant_order fetched", {
-        id: ord?.id,
-        order_status: ord?.order_status,
-        paid_amount: ord?.paid_amount,
-        total_amount: ord?.total_amount,
-        external_reference: ord?.external_reference,
-        preference_id: ord?.preference_id,
-        payments,
-      });
-
-      const approvedOrAny = payments.find((p) => p?.status === "approved") || payments[0];
+      const payments = ord?.payments || [];
+      const approvedOrAny = payments.find((p) => p.status === "approved") || payments[0];
 
       if (!approvedOrAny?.id) {
         console.log("MP merchant_order without payments", {
-          merchantOrderId: resourceId,
+          merchantOrderId: String(resourceId),
           order_status: ord?.order_status,
-          paid_amount: ord?.paid_amount,
-          total_amount: ord?.total_amount,
-          external_reference: ord?.external_reference,
         });
         return res.status(200).send("merchant_order without payment");
       }
@@ -106,44 +117,18 @@ module.exports = async (req, res) => {
     }
 
     const pay = payment?.response || payment;
-
-    console.log("MP payment fetched", {
-      id: pay?.id,
-      status: pay?.status,
-      status_detail: pay?.status_detail,
-      transaction_amount: pay?.transaction_amount,
-      external_reference: pay?.external_reference,
-      metadata: pay?.metadata,
-      payer_email: pay?.payer?.email,
-    });
-
     if (!pay || pay.status !== "approved") {
       return res.status(200).send("not-approved");
     }
 
-    let email = String(pay.metadata?.email || pay.payer?.email || "").trim().toLowerCase();
-    let planId = String(pay.metadata?.planId || pay.metadata?.plan || "").trim().toLowerCase();
-
-    if ((!email || !planId) && pay.external_reference) {
-      const [extEmail, extPlan] = String(pay.external_reference).split("|");
-      if (!email && extEmail) email = String(extEmail).trim().toLowerCase();
-      if (!planId && extPlan) planId = String(extPlan).trim().toLowerCase();
-    }
-
+    const email = String(pay.metadata?.email || pay.payer?.email || "").trim().toLowerCase();
+    const planId = String(pay.metadata?.planId || pay.metadata?.plan || "").trim().toLowerCase();
     if (!email || !planId) {
-      console.log("MP webhook missing email/plan", {
-        paymentId: pay?.id,
-        email,
-        planId,
-        external_reference: pay?.external_reference,
-        metadata: pay?.metadata,
-      });
       return res.status(200).send("missing-email-or-plan");
     }
 
     const tier = planToTier(planId);
     const days = planDays(planId);
-
     if (!tier) {
       return res.status(200).send("invalid-plan");
     }
@@ -182,12 +167,18 @@ module.exports = async (req, res) => {
       );
     }
 
-    console.log("MP membership activated", {
-      email,
-      planId,
-      tier,
-      paymentId: pay?.id,
-    });
+    console.log("MP membership activated", { email, planId, tier, paymentId: pay.id });
+
+    try {
+      await sendActivationEmail(email);
+    } catch (mailErr) {
+      console.error("MP activation email error", {
+        email,
+        message: mailErr?.message,
+        error: mailErr?.error,
+        status: mailErr?.status,
+      });
+    }
 
     return res.status(200).send("ok");
   } catch (err) {
@@ -196,9 +187,7 @@ module.exports = async (req, res) => {
       error: err.error,
       status: err.status,
       cause: err.cause,
-      stack: err.stack,
     });
-
-    return res.status(200).send("error");
+    return res.status(500).send("error");
   }
 };
