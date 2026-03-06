@@ -1,71 +1,138 @@
 const cors = require("../../_cors");
 const db = require("../../_db");
-const { MercadoPagoConfig, Payment } = require("mercadopago");
+const { MercadoPagoConfig, Payment, MerchantOrder } = require("mercadopago");
 
-function planToTier(plan) {
-  const p = String(plan || "").toLowerCase();
+function planToTier(planId) {
+  const p = String(planId || "").toLowerCase();
   if (p === "mensual") return "basic";
-  if (p === "trimestral") return "goleador"; // ajusta si tú quieres otro
-  if (p === "anual") return "campeon";      // ajusta si tú quieres otro
+  if (p === "trimestral") return "goleador";
+  if (p === "anual") return "campeon";
   if (p === "vitalicio") return "leyenda";
-  return "basic";
+  return null;
+}
+
+function planDays(planId) {
+  const p = String(planId || "").toLowerCase();
+  if (p === "mensual") return 30;
+  if (p === "trimestral") return 120;
+  if (p === "anual") return 365;
+  if (p === "vitalicio") return null;
+  return 30;
 }
 
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
-  // MP pega GET o POST según evento, aceptamos ambos
-  if (req.method !== "GET" && req.method !== "POST") return res.status(405).send("Method not allowed");
+  if (req.method !== "POST" && req.method !== "GET") {
+    return res.status(405).send("Method not allowed");
+  }
 
   try {
     const accessToken = process.env.MP_ACCESS_TOKEN;
-    if (!accessToken) return res.status(500).send("MP_ACCESS_TOKEN missing");
+    if (!accessToken) {
+      return res.status(500).send("MP_ACCESS_TOKEN missing");
+    }
 
     const client = new MercadoPagoConfig({ accessToken });
     const paymentApi = new Payment(client);
+    const merchantOrderApi = new MerchantOrder(client);
 
-    // MP puede mandar data.id o query params
-    const dataId =
-      (req.body && req.body.data && req.body.data.id) ||
-      (req.query && req.query["data.id"]) ||
-      (req.query && req.query.id);
+    const topic =
+      req.query.topic ||
+      req.body?.type ||
+      req.body?.topic ||
+      req.query.type;
 
-    const type = (req.body && req.body.type) || req.query.type;
+    const resourceId =
+      req.query.id ||
+      req.query["data.id"] ||
+      req.body?.data?.id ||
+      req.body?.id;
 
-    // Si no es payment, igual responde 200 (MP reintenta si no)
-    if (!dataId || (type && type !== "payment")) return res.status(200).send("ignored");
+    if (!topic || !resourceId) {
+      return res.status(200).send("ignored");
+    }
 
-    const pay = await paymentApi.get({ id: Number(dataId) });
+    let payment = null;
 
-    // Solo aprobados activan
-    if (pay.status !== "approved") return res.status(200).send("not-approved");
+    if (topic === "payment") {
+      payment = await paymentApi.get({ id: Number(resourceId) });
+    } else if (topic === "merchant_order") {
+      const order = await merchantOrderApi.get({ merchantOrderId: Number(resourceId) });
 
-    const email = String(pay.metadata?.email || "").toLowerCase();
-    const plan = String(pay.metadata?.plan || "").toLowerCase();
-    if (!email) return res.status(200).send("no-email");
+      const payments = order?.payments || order?.response?.payments || [];
+      const approvedOrAny = payments.find(p => p.status === "approved") || payments[0];
 
-    const tier = planToTier(plan);
+      if (!approvedOrAny?.id) {
+        return res.status(200).send("merchant_order without payment");
+      }
 
-    // activa membresía (ajusta a tu esquema real)
-    // idea: upsert por email
-    await db.query(
-      `
-      INSERT INTO memberships (email, plan_id, tier, status, start_at, end_at)
-      VALUES ($1, $2, $3, 'active', NOW(), NOW() + INTERVAL '30 days')
-      ON CONFLICT (email)
-      DO UPDATE SET
-        plan_id = EXCLUDED.plan_id,
-        tier = EXCLUDED.tier,
-        status = 'active',
-        start_at = NOW(),
-        end_at = NOW() + INTERVAL '30 days'
-      `,
-      [email, plan, tier]
-    );
+      payment = await paymentApi.get({ id: Number(approvedOrAny.id) });
+    } else {
+      return res.status(200).send("ignored");
+    }
+
+    const pay = payment?.response || payment;
+
+    if (!pay || pay.status !== "approved") {
+      return res.status(200).send("not-approved");
+    }
+
+    const email = String(pay.metadata?.email || pay.payer?.email || "").toLowerCase();
+    const planId = String(pay.metadata?.planId || pay.metadata?.plan || "").toLowerCase();
+
+    if (!email || !planId) {
+      return res.status(200).send("missing-email-or-plan");
+    }
+
+    const tier = planToTier(planId);
+    const days = planDays(planId);
+
+    if (!tier) {
+      return res.status(200).send("invalid-plan");
+    }
+
+    if (days === null) {
+      await db.query(
+        `
+        INSERT INTO memberships (email, plan_id, tier, status, start_at, end_at, cancel_at_period_end)
+        VALUES ($1, $2, $3, 'active', NOW(), NULL, false)
+        ON CONFLICT (email)
+        DO UPDATE SET
+          plan_id = EXCLUDED.plan_id,
+          tier = EXCLUDED.tier,
+          status = 'active',
+          start_at = NOW(),
+          end_at = NULL,
+          cancel_at_period_end = false
+        `,
+        [email, planId, tier]
+      );
+    } else {
+      await db.query(
+        `
+        INSERT INTO memberships (email, plan_id, tier, status, start_at, end_at, cancel_at_period_end)
+        VALUES ($1, $2, $3, 'active', NOW(), NOW() + ($4 || ' days')::interval, false)
+        ON CONFLICT (email)
+        DO UPDATE SET
+          plan_id = EXCLUDED.plan_id,
+          tier = EXCLUDED.tier,
+          status = 'active',
+          start_at = NOW(),
+          end_at = NOW() + ($4 || ' days')::interval,
+          cancel_at_period_end = false
+        `,
+        [email, planId, tier, String(days)]
+      );
+    }
 
     return res.status(200).send("ok");
-  } catch (e) {
-    console.error("MP webhook error", e);
-    // responde 200 si quieres evitar reintentos infinitos, pero yo prefiero 500
+  } catch (err) {
+    console.error("MP webhook error", {
+      message: err.message,
+      error: err.error,
+      status: err.status,
+      cause: err.cause,
+    });
     return res.status(500).send("error");
   }
 };
