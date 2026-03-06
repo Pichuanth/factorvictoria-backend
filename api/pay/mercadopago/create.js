@@ -22,7 +22,7 @@ const finalPlan = planId || plan;
 
     // IDs reales de plan según backend/api/_plans.js
     const prices = {
-      mensual: 19990,
+      mensual: 1000,
       trimestral: 44990,
       anual: 99990,
       vitalicio: 249990,
