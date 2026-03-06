@@ -39,7 +39,7 @@ module.exports = async (req, res) => {
     }
 
     const prices = {
-      mensual: 1000,
+      mensual: 5000,
       trimestral: 44990,
       anual: 99990,
       vitalicio: 249990,
