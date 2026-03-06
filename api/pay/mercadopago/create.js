@@ -1,6 +1,20 @@
 const cors = require("../../_cors");
 const { MercadoPagoConfig, Preference } = require("mercadopago");
 
+function deriveNameParts(email = "") {
+  const local = String(email || "").split("@")[0] || "cliente";
+  const cleaned = local
+    .replace(/[._\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const parts = cleaned ? cleaned.split(" ") : ["Cliente"];
+  const first = (parts[0] || "Cliente").slice(0, 40);
+  const last = (parts.slice(1).join(" ") || "Factor Victoria").slice(0, 40);
+
+  return { first, last };
+}
+
 module.exports = async (req, res) => {
   if (cors(req, res)) return;
   if (req.method !== "POST") {
@@ -16,7 +30,7 @@ module.exports = async (req, res) => {
     const client = new MercadoPagoConfig({ accessToken });
     const preference = new Preference(client);
 
-    const { email, plan, planId } = req.body || {};
+    const { email, plan, planId, firstName, lastName } = req.body || {};
     const finalPlan = String(planId || plan || "").trim().toLowerCase();
     const finalEmail = String(email || "").trim().toLowerCase();
 
@@ -24,8 +38,6 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: "Missing email/plan" });
     }
 
-    // Temporal para pruebas reales de MP.
-    // OJO: aquí estaba hardcodeado 1000, por eso cambiar _plans.js no movía el checkout.
     const prices = {
       mensual: 5000,
       trimestral: 44990,
@@ -46,11 +58,17 @@ module.exports = async (req, res) => {
 
     const FRONT = (process.env.FRONT_URL || "https://factorvictoria.com").replace(/\/$/, "");
     const BACK = (process.env.BACK_URL || "https://factorvictoria-backend.vercel.app").replace(/\/$/, "");
+    const derived = deriveNameParts(finalEmail);
+    const payerFirstName = String(firstName || "").trim() || derived.first;
+    const payerLastName = String(lastName || "").trim() || derived.last;
 
     const prefBody = {
       items: [
         {
+          id: finalPlan,
           title: `Factor Victoria - ${titles[finalPlan] || finalPlan}`,
+          description: `Suscripción ${titles[finalPlan] || finalPlan} de Factor Victoria`,
+          category_id: "subscriptions",
           quantity: 1,
           currency_id: "CLP",
           unit_price: Number(prices[finalPlan]),
@@ -59,11 +77,14 @@ module.exports = async (req, res) => {
 
       payer: {
         email: finalEmail,
+        name: payerFirstName,
+        surname: payerLastName,
       },
 
       metadata: {
         email: finalEmail,
         planId: finalPlan,
+        source: "factorvictoria-web",
       },
 
       external_reference: `${finalEmail}|${finalPlan}`,
@@ -75,12 +96,27 @@ module.exports = async (req, res) => {
       },
 
       auto_return: "approved",
-      binary_mode: true,
       notification_url: `${BACK}/api/pay/mercadopago/webhook`,
-      statement_descriptor: "FACTOR VICTORIA",
+      statement_descriptor: "FACTVICTORIA",
     };
 
+    console.log("MP create preference request", {
+      email: finalEmail,
+      planId: finalPlan,
+      amount: prices[finalPlan],
+      payer: prefBody.payer,
+      notification_url: prefBody.notification_url,
+      back_urls: prefBody.back_urls,
+      external_reference: prefBody.external_reference,
+    });
+
     const result = await preference.create({ body: prefBody });
+
+    console.log("MP create preference OK", {
+      id: result?.id,
+      init_point: result?.init_point,
+      sandbox_init_point: result?.sandbox_init_point || null,
+    });
 
     return res.status(200).json({
       ok: true,
@@ -91,6 +127,7 @@ module.exports = async (req, res) => {
         email: finalEmail,
         planId: finalPlan,
         amount: prices[finalPlan],
+        payer: prefBody.payer,
       },
     });
   } catch (e) {

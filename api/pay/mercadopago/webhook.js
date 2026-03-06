@@ -21,23 +21,20 @@ function planDays(planId) {
 }
 
 function getTopic(req) {
-  return (
-    req.query.topic ||
-    req.query.type ||
-    req.body?.topic ||
-    req.body?.type ||
-    ""
-  );
+  return req.query.topic || req.query.type || req.body?.topic || req.body?.type || "";
 }
 
 function getResourceId(req) {
-  return (
-    req.query["data.id"] ||
-    req.query.id ||
-    req.body?.data?.id ||
-    req.body?.id ||
-    null
-  );
+  const direct = req.query["data.id"] || req.query.id || req.body?.data?.id || req.body?.id || null;
+  if (direct) return direct;
+
+  const resource = req.body?.resource;
+  if (typeof resource === "string") {
+    const m = resource.match(/\/(\d+)(?:\?|$)/);
+    if (m?.[1]) return m[1];
+  }
+
+  return null;
 }
 
 module.exports = async (req, res) => {
@@ -79,10 +76,27 @@ module.exports = async (req, res) => {
       const order = await merchantOrderApi.get({ merchantOrderId: Number(resourceId) });
       const ord = order?.response || order;
       const payments = Array.isArray(ord?.payments) ? ord.payments : [];
+
+      console.log("MP merchant_order fetched", {
+        id: ord?.id,
+        order_status: ord?.order_status,
+        paid_amount: ord?.paid_amount,
+        total_amount: ord?.total_amount,
+        external_reference: ord?.external_reference,
+        preference_id: ord?.preference_id,
+        payments,
+      });
+
       const approvedOrAny = payments.find((p) => p?.status === "approved") || payments[0];
 
       if (!approvedOrAny?.id) {
-        console.log("MP merchant_order without payments", { merchantOrderId: resourceId });
+        console.log("MP merchant_order without payments", {
+          merchantOrderId: resourceId,
+          order_status: ord?.order_status,
+          paid_amount: ord?.paid_amount,
+          total_amount: ord?.total_amount,
+          external_reference: ord?.external_reference,
+        });
         return res.status(200).send("merchant_order without payment");
       }
 
@@ -97,6 +111,7 @@ module.exports = async (req, res) => {
       id: pay?.id,
       status: pay?.status,
       status_detail: pay?.status_detail,
+      transaction_amount: pay?.transaction_amount,
       external_reference: pay?.external_reference,
       metadata: pay?.metadata,
       payer_email: pay?.payer?.email,
@@ -106,12 +121,8 @@ module.exports = async (req, res) => {
       return res.status(200).send("not-approved");
     }
 
-    let email = String(pay.metadata?.email || pay.payer?.email || "")
-      .trim()
-      .toLowerCase();
-    let planId = String(pay.metadata?.planId || pay.metadata?.plan || "")
-      .trim()
-      .toLowerCase();
+    let email = String(pay.metadata?.email || pay.payer?.email || "").trim().toLowerCase();
+    let planId = String(pay.metadata?.planId || pay.metadata?.plan || "").trim().toLowerCase();
 
     if ((!email || !planId) && pay.external_reference) {
       const [extEmail, extPlan] = String(pay.external_reference).split("|");
