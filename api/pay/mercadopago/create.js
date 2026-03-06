@@ -13,18 +13,22 @@ module.exports = async (req, res) => {
     const client = new MercadoPagoConfig({ accessToken });
     const preference = new Preference(client);
 
-    const { email, plan } = req.body || {};
-    if (!email || !plan) return res.status(400).json({ error: "Missing email/plan" });
+    const { email, plan, planId } = req.body || {};
+const finalPlan = planId || plan;
 
-    // OJO: que estos ids coincidan con tu UI / lógica
+    if (!email || !finalPlan) {
+   return res.status(400).json({ error: "Missing email/plan" });
+   }
+
+    // IDs reales de plan según backend/api/_plans.js
     const prices = {
-      inicio: 19990,
-      goleador: 44990,
-      campeon: 99990,
-      leyenda: 249990, // ✅ agregado
+      mensual: 19990,
+      trimestral: 44990,
+      anual: 99990,
+      vitalicio: 249990,
     };
 
-    if (!prices[plan]) return res.status(400).json({ error: "Invalid plan" });
+    if (!prices[finalPlan]) return res.status(400).json({ error: "Invalid plan" });
 
     // URLs (ajusta si tu frontend/back cambian)
     const FRONT = (process.env.FRONT_URL || "https://factorvictoria.com").replace(/\/$/, "");
@@ -33,19 +37,18 @@ module.exports = async (req, res) => {
     const prefBody = {
       items: [
         {
-          title: `Factor Victoria - ${plan}`,
+          title: "Factor Victoria - " + finalPlan,
           quantity: 1,
           currency_id: "CLP",
-          unit_price: prices[plan],
+          unit_price: prices[finalPlan],
         },
       ],
 
       // Metadata para reconocer al usuario en el webhook
       metadata: {
-        email: String(email).toLowerCase(),
-        plan,
+      email,
+      planId: finalPlan,
       },
-
       back_urls: {
         success: `${FRONT}/login?mp=success`,
         pending: `${FRONT}/login?mp=pending`,
