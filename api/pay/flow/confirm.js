@@ -119,13 +119,13 @@ const tier = planTier[planId] || null;
     if (days) {
       await db.query(
         `insert into memberships (email, plan_id, tier, status, start_at, end_at, updated_at)
-         values (lower($1), $2, $3, 'active', now(), now() + make_interval(days => $3::int), now())
+         values (lower($1), $2, $3, 'active', now(), now() + make_interval(days => $4::int), now())
          on conflict (email) do update
            set plan_id=excluded.plan_id,
                tier=excluded.tier,
                status='active',
                start_at=now(),
-               end_at=now() + make_interval(days => $3::int),
+               end_at=now() + make_interval(days => $4::int),
                updated_at=now()`,
         [email, planId, tier, days]
       );
