@@ -4,7 +4,7 @@
 module.exports = {
   mensual: {
     label: "Inicio (Mensual)",
-    amount: 19990,
+    amount: 14990,
     currency: "CLP",
     days: 30,
     tier: "basic", // x10
